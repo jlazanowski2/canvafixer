@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.optimized.html
+*.optimized.txt
+
+# Sample email files (may contain real marketing content)
+email.txt
+email2.html
+email3.html
