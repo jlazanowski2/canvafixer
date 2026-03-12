@@ -499,6 +499,16 @@ export function optimize(raw) {
 
   output = output.replace(/<!DOCTYPE[^>]*>/i, originalDoctype);
 
+  // XHTML compliance: self-close void elements (required by XHTML DOCTYPE for D365)
+  output = output.replace(/<(meta|img|br|hr|link|input)(\s[^>]*?)?\s*>/gi, (match, tag, attrs) => {
+    attrs = attrs || "";
+    if (/\/\s*$/.test(attrs)) return match;
+    return `<${tag}${attrs} />`;
+  });
+
+  // XHTML compliance: ensure <html> has xmlns attribute
+  output = output.replace(/<html(?![^>]*xmlns)([^>]*)>/i, '<html xmlns="http://www.w3.org/1999/xhtml"$1>');
+
   output = output
     .replace(/(<\/table>)/gi, "$1\n")
     .replace(/(<\/tr>)/gi, "$1\n")

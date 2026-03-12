@@ -692,6 +692,17 @@ let output = $.html();
 // Restore original DOCTYPE (cheerio may have mangled it)
 output = output.replace(/<!DOCTYPE[^>]*>/i, originalDoctype);
 
+// XHTML compliance: self-close void elements (required by XHTML DOCTYPE for D365)
+output = output.replace(/<(meta|img|br|hr|link|input)(\s[^>]*?)?\s*>/gi, (match, tag, attrs) => {
+  attrs = attrs || "";
+  // Don't double-close if already self-closed
+  if (/\/\s*$/.test(attrs)) return match;
+  return `<${tag}${attrs} />`;
+});
+
+// XHTML compliance: ensure <html> has xmlns attribute
+output = output.replace(/<html(?![^>]*xmlns)([^>]*)>/i, '<html xmlns="http://www.w3.org/1999/xhtml"$1>');
+
 // Pretty-print: add newlines after closing tags for readability
 output = output
   .replace(/(<\/table>)/gi, "$1\n")
