@@ -53,6 +53,7 @@ const stats = {
   tablesRemoved: 0,
   mobileDupesRemoved: 0,
   responsiveCssMerged: 0,
+  sesNoTrackRemoved: 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -564,6 +565,13 @@ $("table").each(function () {
 // 3f. Clean up link styles ---------------------------------------------------
 $("a").each(function () {
   const $a = $(this);
+
+  // Remove ses:no-track (Amazon SES attribute — invalid XHTML namespace, not needed for D365)
+  if ($a.attr("ses:no-track") !== undefined) {
+    $a.removeAttr("ses:no-track");
+    stats.sesNoTrackRemoved++;
+  }
+
   let style = $a.attr("style") || "";
   // Remove leaked JS margin properties
   style = style.replace(
@@ -703,6 +711,9 @@ output = output.replace(/<(meta|img|br|hr|link|input)(\s[^>]*?)?\s*>/gi, (match,
 // XHTML compliance: ensure <html> has xmlns attribute
 output = output.replace(/<html(?![^>]*xmlns)([^>]*)>/i, '<html xmlns="http://www.w3.org/1999/xhtml"$1>');
 
+// Remove any remaining ses:no-track attributes (safety net — cheerio may not handle namespaced attrs)
+output = output.replace(/\s+ses:no-track="[^"]*"/gi, "");
+
 // Pretty-print: add newlines after closing tags for readability
 output = output
   .replace(/(<\/table>)/gi, "$1\n")
@@ -767,6 +778,7 @@ const labels = {
   tablesRemoved: "total tables eliminated",
   mobileDupesRemoved: "mobile duplicate blocks removed",
   responsiveCssMerged: "responsive CSS consolidated",
+  sesNoTrackRemoved: "ses:no-track removed (invalid XHTML namespace)",
   d365MarkersAdded: "D365 content block sections created",
 };
 Object.entries(stats).forEach(([key, count]) => {
