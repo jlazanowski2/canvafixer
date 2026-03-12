@@ -38,10 +38,9 @@ export function optimize(raw) {
   };
 
   // Phase 1 - Preserve original DOCTYPE
-  const doctypeMatch = raw.match(/<!DOCTYPE[^>]*>/i);
-  const originalDoctype = doctypeMatch
-    ? doctypeMatch[0]
-    : '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">';
+  // Force HTML5 DOCTYPE — XHTML causes D365 validation failures because
+  // D365's editor outputs HTML5-style markup that breaks XHTML rules.
+  const originalDoctype = "<!DOCTYPE html>";
 
   // Phase 2 - Raw string fixes
   let html = raw;
@@ -506,17 +505,7 @@ export function optimize(raw) {
 
   output = output.replace(/<!DOCTYPE[^>]*>/i, originalDoctype);
 
-  // XHTML compliance: self-close void elements (required by XHTML DOCTYPE for D365)
-  output = output.replace(/<(meta|img|br|hr|link|input)(\s[^>]*?)?\s*>/gi, (match, tag, attrs) => {
-    attrs = attrs || "";
-    if (/\/\s*$/.test(attrs)) return match;
-    return `<${tag}${attrs} />`;
-  });
-
-  // XHTML compliance: ensure <html> has xmlns attribute
-  output = output.replace(/<html(?![^>]*xmlns)([^>]*)>/i, '<html xmlns="http://www.w3.org/1999/xhtml"$1>');
-
-  // Remove any remaining ses:no-track attributes (safety net — cheerio may not handle namespaced attrs)
+  // Remove any remaining ses:no-track attributes (invalid namespaced attr)
   output = output.replace(/\s+ses:no-track="[^"]*"/gi, "");
 
   output = output

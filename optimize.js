@@ -60,10 +60,11 @@ const stats = {
 // Phase 1 - Preserve the original DOCTYPE
 //   Cheerio may mangle the DOCTYPE, so we capture it and restore later.
 // ---------------------------------------------------------------------------
-const doctypeMatch = raw.match(/<!DOCTYPE[^>]*>/i);
-const originalDoctype = doctypeMatch
-  ? doctypeMatch[0]
-  : '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">';
+// Force HTML5 DOCTYPE — XHTML Transitional causes D365 to validate strictly,
+// but D365's own editor outputs HTML5-style markup (non-self-closed tags),
+// which fails XHTML validation. HTML5 DOCTYPE avoids this entirely and
+// email clients don't care about the DOCTYPE.
+const originalDoctype = "<!DOCTYPE html>";
 
 // ---------------------------------------------------------------------------
 // Phase 2 - Raw string fixes (before DOM parse)
@@ -697,21 +698,10 @@ $("a").each(function () {
 // ---------------------------------------------------------------------------
 let output = $.html();
 
-// Restore original DOCTYPE (cheerio may have mangled it)
+// Replace DOCTYPE with HTML5 (cheerio may have mangled it)
 output = output.replace(/<!DOCTYPE[^>]*>/i, originalDoctype);
 
-// XHTML compliance: self-close void elements (required by XHTML DOCTYPE for D365)
-output = output.replace(/<(meta|img|br|hr|link|input)(\s[^>]*?)?\s*>/gi, (match, tag, attrs) => {
-  attrs = attrs || "";
-  // Don't double-close if already self-closed
-  if (/\/\s*$/.test(attrs)) return match;
-  return `<${tag}${attrs} />`;
-});
-
-// XHTML compliance: ensure <html> has xmlns attribute
-output = output.replace(/<html(?![^>]*xmlns)([^>]*)>/i, '<html xmlns="http://www.w3.org/1999/xhtml"$1>');
-
-// Remove any remaining ses:no-track attributes (safety net — cheerio may not handle namespaced attrs)
+// Remove any remaining ses:no-track attributes (invalid namespaced attr)
 output = output.replace(/\s+ses:no-track="[^"]*"/gi, "");
 
 // Pretty-print: add newlines after closing tags for readability
