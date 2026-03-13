@@ -143,18 +143,22 @@ export default function App() {
         body: JSON.stringify({ html: output }),
       });
 
-      if (res.status === 401) {
-        clearToken();
-        setAuthed(false);
-        setError("Session expired — please log in again");
-        return;
-      }
-
       let data;
       try {
         data = await res.json();
       } catch {
         setError(`API error (${res.status}) — response was not JSON. The function may have crashed.`);
+        return;
+      }
+
+      if (res.status === 401) {
+        const reason = data.error || "Session expired";
+        // Only kick to login if actually expired, not for config issues
+        if (reason.includes("expired") || reason.includes("no token")) {
+          clearToken();
+          setAuthed(false);
+        }
+        setError(reason);
         return;
       }
 

@@ -27,18 +27,18 @@ function checkRateLimit(ip) {
 function validateToken(token) {
   try {
     const appPassword = process.env.APP_PASSWORD;
-    if (!appPassword || !token) return false;
+    if (!appPassword) return { valid: false, reason: "APP_PASSWORD not configured" };
+    if (!token) return { valid: false, reason: "no token provided" };
 
     const parts = token.split(".");
-    if (parts.length !== 2) return false;
+    if (parts.length !== 2) return { valid: false, reason: `bad token format (${parts.length} parts)` };
 
     const [payload, hmac] = parts;
     const expiry = parseInt(payload, 10);
 
-    // Check expiry
-    if (isNaN(expiry) || Math.floor(Date.now() / 1000) > expiry) return false;
+    if (isNaN(expiry)) return { valid: false, reason: "invalid expiry" };
+    if (Math.floor(Date.now() / 1000) > expiry) return { valid: false, reason: "token expired" };
 
-    // Verify HMAC
     const expected = crypto
       .createHmac("sha256", appPassword)
       .update(payload)
@@ -47,11 +47,13 @@ function validateToken(token) {
     const hmacBuf = Buffer.from(hmac, "hex");
     const expectedBuf = Buffer.from(expected, "hex");
 
-    if (hmacBuf.length !== expectedBuf.length) return false;
+    if (hmacBuf.length !== expectedBuf.length) return { valid: false, reason: "HMAC length mismatch" };
 
-    return crypto.timingSafeEqual(hmacBuf, expectedBuf);
-  } catch {
-    return false;
+    if (!crypto.timingSafeEqual(hmacBuf, expectedBuf)) return { valid: false, reason: "HMAC mismatch" };
+
+    return { valid: true };
+  } catch (e) {
+    return { valid: false, reason: `validation error: ${e.message}` };
   }
 }
 
@@ -66,11 +68,12 @@ module.exports = async function (context, req) {
   const authHeader = req.headers?.authorization || "";
   const token = authHeader.replace(/^Bearer\s+/i, "");
 
-  if (!validateToken(token)) {
+  const tokenResult = validateToken(token);
+  if (!tokenResult.valid) {
     context.res = {
       status: 401,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Unauthorized — invalid or expired token" }),
+      body: JSON.stringify({ error: `Unauthorized — ${tokenResult.reason}` }),
     };
     return;
   }
