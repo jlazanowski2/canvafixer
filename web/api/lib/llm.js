@@ -6,6 +6,7 @@
  *   LLM_PROVIDER: "anthropic" | "openai"
  *   LLM_MODEL: model ID (e.g., "claude-sonnet-4-6", "gpt-4o")
  *   ANTHROPIC_API_KEY: API key for Anthropic
+ *   ANTHROPIC_BASE_URL: (optional) custom base URL (e.g., Azure AI Foundry)
  *   OPENAI_API_KEY: API key for OpenAI-compatible
  *   OPENAI_BASE_URL: (optional) custom base URL for OpenAI-compatible APIs
  */
@@ -14,7 +15,11 @@ const { SYSTEM_PROMPT, USER_PROMPT_TEMPLATE } = require("./rules");
 
 async function callAnthropic(html, model) {
   const Anthropic = require("@anthropic-ai/sdk");
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const config = { apiKey: process.env.ANTHROPIC_API_KEY };
+  if (process.env.ANTHROPIC_BASE_URL) {
+    config.baseURL = process.env.ANTHROPIC_BASE_URL;
+  }
+  const client = new Anthropic(config);
 
   const response = await client.messages.create({
     model: model || "claude-sonnet-4-6",
