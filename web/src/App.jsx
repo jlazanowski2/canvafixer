@@ -90,6 +90,22 @@ export default function App() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiResult, setAiResult] = useState(null);
 
+  const handleDragOver = useCallback((e) => {
+    e.preventDefault();
+    setDragging(true);
+  }, []);
+  const handleDragLeave = useCallback(() => setDragging(false), []);
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    setDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file && (file.name.endsWith(".html") || file.name.endsWith(".txt"))) {
+      const reader = new FileReader();
+      reader.onload = (ev) => setInput(ev.target.result);
+      reader.readAsText(file);
+    }
+  }, []);
+
   if (!authed) {
     return <LoginScreen onLogin={() => setAuthed(true)} />;
   }
@@ -172,22 +188,6 @@ export default function App() {
     setAuthed(false);
     handleClear();
   }
-
-  const handleDragOver = useCallback((e) => {
-    e.preventDefault();
-    setDragging(true);
-  }, []);
-  const handleDragLeave = useCallback(() => setDragging(false), []);
-  const handleDrop = useCallback((e) => {
-    e.preventDefault();
-    setDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file && (file.name.endsWith(".html") || file.name.endsWith(".txt"))) {
-      const reader = new FileReader();
-      reader.onload = (ev) => setInput(ev.target.result);
-      reader.readAsText(file);
-    }
-  }, []);
 
   const pct = result
     ? (((result.inputSize - result.outputSize) / result.inputSize) * 100).toFixed(1)
