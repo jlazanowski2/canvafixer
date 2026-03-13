@@ -194,7 +194,7 @@ export default function App() {
     : 0;
 
   return (
-    <div className="app-shell">
+    <div className="app-shell app-shell--enter">
       <header className="header">
         <div className="header-left">
           <div className="logo">
@@ -244,12 +244,23 @@ export default function App() {
               </span>
             )}
           </div>
-          <textarea
-            className="editor editor--output"
-            value={output}
-            readOnly
-            placeholder="Optimized HTML will appear here..."
-          />
+          <div className="panel-body">
+            <textarea
+              className="editor editor--output"
+              value={output}
+              readOnly
+              placeholder="Optimized HTML will appear here..."
+            />
+            {aiLoading && (
+              <div className="loading-overlay">
+                <div className="loading-content">
+                  <span className="spinner spinner--lg" />
+                  <span className="loading-text">AI is restructuring your email…</span>
+                  <span className="loading-sub">This usually takes 15–30 seconds</span>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -266,7 +277,14 @@ export default function App() {
           onClick={handleAiRestructure}
           disabled={!output || aiLoading}
         >
-          {aiLoading ? "Restructuring..." : "Pass 2: AI Restructure"}
+          {aiLoading ? (
+            <>
+              <span className="spinner" />
+              Restructuring…
+            </>
+          ) : (
+            "Pass 2: AI Restructure"
+          )}
         </button>
         <button
           className="btn btn--copy"
