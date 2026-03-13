@@ -31,7 +31,7 @@ function validateToken(token) {
     if (!token) return { valid: false, reason: "no token provided" };
 
     const dotIndex = token.indexOf(".");
-    if (dotIndex === -1) return { valid: false, reason: `bad token format — no dot separator. Token starts: ${token.substring(0, 20)}` };
+    if (dotIndex === -1) return { valid: false, reason: "bad token format" };
 
     const payload = token.substring(0, dotIndex);
     const hmac = token.substring(dotIndex + 1);
@@ -69,14 +69,12 @@ module.exports = async function (context, req) {
   const authHeader = req.headers?.authorization || req.headers?.Authorization || "";
   const token = authHeader.replace(/^Bearer\s+/i, "").trim();
 
-  context.log("Auth header present:", !!authHeader, "Token length:", token.length, "Token preview:", token.substring(0, 25) + "...");
-
   const tokenResult = validateToken(token);
   if (!tokenResult.valid) {
     context.res = {
       status: 401,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: `Unauthorized — ${tokenResult.reason}` }),
+      body: { error: `Unauthorized — ${tokenResult.reason}` },
     };
     return;
   }
@@ -90,7 +88,7 @@ module.exports = async function (context, req) {
     context.res = {
       status: 429,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Rate limit exceeded — max 10 requests per hour" }),
+      body: { error: "Rate limit exceeded — max 10 requests per hour" },
     };
     return;
   }
@@ -102,7 +100,7 @@ module.exports = async function (context, req) {
     context.res = {
       status: 400,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Missing 'html' in request body" }),
+      body: { error: "Missing 'html' in request body" },
     };
     return;
   }
@@ -111,7 +109,7 @@ module.exports = async function (context, req) {
     context.res = {
       status: 400,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: `Input too large — max ${MAX_INPUT_BYTES / 1024}KB` }),
+      body: { error: `Input too large — max ${MAX_INPUT_BYTES / 1024}KB` },
     };
     return;
   }
@@ -123,17 +121,17 @@ module.exports = async function (context, req) {
     context.res = {
       status: 200,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      body: {
         html: result.html,
         usage: result.usage,
-      }),
+      },
     };
   } catch (err) {
     context.log.error("LLM restructure failed:", err.message);
     context.res = {
       status: 500,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "AI restructure failed: " + err.message }),
+      body: { error: "AI restructure failed: " + err.message },
     };
   }
 };

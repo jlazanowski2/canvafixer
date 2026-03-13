@@ -16,7 +16,7 @@ module.exports = async function (context, req) {
     context.res = {
       status: 500,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Server not configured: APP_PASSWORD not set" }),
+      body: { error: "Server not configured: APP_PASSWORD not set" },
     };
     return;
   }
@@ -25,7 +25,7 @@ module.exports = async function (context, req) {
     context.res = {
       status: 401,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Invalid password" }),
+      body: { error: "Invalid password" },
     };
     return;
   }
@@ -44,6 +44,6 @@ module.exports = async function (context, req) {
   context.res = {
     status: 200,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token, expiresIn: 86400 }),
+    body: { token, expiresIn: 86400 },
   };
 };
