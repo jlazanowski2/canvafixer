@@ -30,10 +30,11 @@ function validateToken(token) {
     if (!appPassword) return { valid: false, reason: "APP_PASSWORD not configured" };
     if (!token) return { valid: false, reason: "no token provided" };
 
-    const parts = token.split(".");
-    if (parts.length !== 2) return { valid: false, reason: `bad token format (${parts.length} parts)` };
+    const dotIndex = token.indexOf(".");
+    if (dotIndex === -1) return { valid: false, reason: `bad token format — no dot separator. Token starts: ${token.substring(0, 20)}` };
 
-    const [payload, hmac] = parts;
+    const payload = token.substring(0, dotIndex);
+    const hmac = token.substring(dotIndex + 1);
     const expiry = parseInt(payload, 10);
 
     if (isNaN(expiry)) return { valid: false, reason: "invalid expiry" };
@@ -65,8 +66,10 @@ function validateToken(token) {
  */
 module.exports = async function (context, req) {
   // Auth check
-  const authHeader = req.headers?.authorization || "";
-  const token = authHeader.replace(/^Bearer\s+/i, "");
+  const authHeader = req.headers?.authorization || req.headers?.Authorization || "";
+  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+
+  context.log("Auth header present:", !!authHeader, "Token length:", token.length, "Token preview:", token.substring(0, 25) + "...");
 
   const tokenResult = validateToken(token);
   if (!tokenResult.valid) {
