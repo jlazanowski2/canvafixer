@@ -1,48 +1,54 @@
 /**
- * CanvaFixer - Browser-compatible optimizer module.
- * Ported from optimize.js (Node CLI) to work without fs/path.
+ * CanvaFixer - Browser-compatible optimizer module (Pass 1).
+ * Handles all mechanical/deterministic fixes. The structural rewrite
+ * (Pass 2) is done server-side by the LLM.
  *
- * Usage: import { optimize } from "./optimizer.js";
- *        const { html, stats } = optimize(rawHtmlString);
+ * Usage: import { optimize, statLabels } from "./optimizer.js";
+ *        const { html, stats, inputSize, outputSize } = optimize(rawHtmlString);
  */
 import * as cheerio from "cheerio";
 
 export function optimize(raw) {
   const stats = {
+    // Canva cleanup
+    duplicateMobileBlocksRemoved: 0,
+    conditionalCommentsRemovedFromBody: 0,
+    zeroSizeImages: 0,
+    preloadLinksRemoved: 0,
+    sesNoTrackRemoved: 0,
+    canvaKeywordsMetaRemoved: 0,
+
+    // Style cleanup
     invalidStyleProps: 0,
     negativeBorders: 0,
     redundantBorderRadius: 0,
     alignNull: 0,
     preWrapFixed: 0,
     undefinedMargins: 0,
-    zeroSizeImages: 0,
-    missingAlt: 0,
     minHeightRemoved: 0,
-    preloadLinksRemoved: 0,
     multilinePaddingFixed: 0,
     marginInlineFixed: 0,
     doubleSemicolonsFixed: 0,
+    dataSrcRemoved: 0,
+    fractionalPixelsRounded: 0,
+    relativeLineHeightsFixed: 0,
+
+    // Outlook fixes
+    msoLineHeightRuleAdded: 0,
     imgDisplayBlock: 0,
     imgBorderFixed: 0,
     msoTableSpacing: 0,
-    dataSrcRemoved: 0,
-    passthroughTablesCollapsed: 0,
-    emptyRowsRemoved: 0,
-    emptyContentRemoved: 0,
-    imgCenteringSimplified: 0,
-    tablesRemoved: 0,
-    mobileDupesRemoved: 0,
-    responsiveCssMerged: 0,
-    sesNoTrackRemoved: 0,
-    d365MarkersAdded: 0,
+    bgcolorMirrored: 0,
+    msoParaMarginAdded: 0,
+    spacerRowsConsolidated: 0,
+
+    // D365 additions
+    d365MetaAdded: 0,
+    msoHeadStylesAdded: 0,
+    responsiveStylesAdded: 0,
   };
 
-  // Phase 1 - Preserve original DOCTYPE
-  // Force HTML5 DOCTYPE — XHTML causes D365 validation failures because
-  // D365's editor outputs HTML5-style markup that breaks XHTML rules.
-  const originalDoctype = "<!DOCTYPE html>";
-
-  // Phase 2 - Raw string fixes
+  // Phase 1 - Raw string fixes
   let html = raw;
 
   html = html.replace(
@@ -60,112 +66,69 @@ export function optimize(raw) {
     (_, t, r, b, l) => { stats.multilinePaddingFixed++; return `padding:${t} ${r} ${b} ${l}`; }
   );
 
-  // Phase 3 - DOM-level fixes via cheerio
+  // Phase 2 - DOM-level fixes
   const $ = cheerio.load(html, { xml: false, decodeEntities: false });
 
-  // 3a. Remove <link rel="preload">
+  // Remove Canva duplicate mobile blocks
+  $('[class*="-under-"]').each(function () {
+    const cls = $(this).attr("class") || "";
+    if (/layout-\d+-under-\d+/i.test(cls)) {
+      stats.duplicateMobileBlocksRemoved++;
+      $(this).remove();
+    }
+  });
+
+  // Remove style blocks that only contain layout show/hide rules
+  $("style").each(function () {
+    const content = $(this).html() || "";
+    if (/^\s*@media[^{]*\{[\s\S]*?layout-\d+(-under-\d+)?[\s\S]*?\}\s*$/i.test(content) &&
+        !/[^.#\w-](?!layout-)\w+\s*\{/i.test(content)) {
+      $(this).remove();
+    }
+  });
+
+  // Remove preload links
   $('link[rel="preload"]').each(function () {
     $(this).remove();
     stats.preloadLinksRemoved++;
   });
 
-  // 3b. Merge duplicate desktop/mobile blocks
-  {
-    const desktopBlocks = [];
-    $("table[class]").each(function () {
-      const cls = $(this).attr("class") || "";
-      if (/^layout-\d+$/.test(cls)) {
-        desktopBlocks.push({ cls, el: $(this) });
-      }
-    });
-
-    const responsiveRules = [];
-
-    desktopBlocks.forEach(({ cls, el }) => {
-      const mobileSelector = `table[class^="${cls}-under-"]`;
-      const $mobile = $(mobileSelector);
-      if (!$mobile.length) return;
-
-      const mobileClass = $mobile.attr("class") || "";
-      const bpMatch = mobileClass.match(/under-(\d+)/);
-      const breakpoint = bpMatch ? parseInt(bpMatch[1], 10) : 450;
-
-      let style = el.attr("style") || "";
-      style = style.replace(/display\s*:\s*table\s*;?\s*/gi, "");
-      style = style.trim().replace(/;$/, "");
-      if (style) el.attr("style", style);
-      else el.removeAttr("style");
-
-      const responsiveClass = `responsive-${cls}`;
-      el.attr("class", responsiveClass);
-
-      let hasMultiCol = false;
-      el.find("tr").each(function () {
-        if ($(this).children("td").length > 1) hasMultiCol = true;
-      });
-
-      const mobileBp = breakpoint < 100 ? 480 : breakpoint;
-
-      if (hasMultiCol) {
-        responsiveRules.push({
-          breakpoint: mobileBp,
-          css:
-            `.${responsiveClass} td { display: block !important; width: 100% !important; box-sizing: border-box !important; text-align: center !important; }` +
-            `\n        .${responsiveClass} td[width="4"] { display: none !important; }` +
-            `\n        .${responsiveClass} table { margin: 0 auto !important; }`,
-        });
-      }
-
-      $mobile.remove();
-      stats.mobileDupesRemoved++;
-    });
-
-    if (responsiveRules.length > 0 || desktopBlocks.length > 0) {
-      $("style").each(function () {
-        const content = $(this).html() || "";
-        if (/layout-\d+/i.test(content)) $(this).remove();
-      });
-
-      const prelimBps = [...new Set(responsiveRules.map((r) => r.breakpoint))];
-      const globalBp = Math.max(...prelimBps, 480);
-      responsiveRules.push({
-        breakpoint: globalBp,
-        css:
-          `table { max-width: 100% !important; }` +
-          `\n        img { max-width: 100% !important; height: auto !important; }` +
-          `\n        td { box-sizing: border-box !important; }`,
-      });
-
-      const allBreakpoints = [...new Set(responsiveRules.map((r) => r.breakpoint))];
-      let cssBlock = "";
-      allBreakpoints.forEach((bp) => {
-        const rules = responsiveRules.filter((r) => r.breakpoint === bp);
-        cssBlock +=
-          `\n      @media screen and (max-width: ${bp}px) {\n        ` +
-          rules.map((r) => r.css).join("\n        ") +
-          `\n      }`;
-      });
-
-      let baseCss = "";
-      desktopBlocks.forEach(({ cls }) => {
-        baseCss += `\n      .responsive-${cls} { width: 100% !important; }`;
-      });
-
-      if (baseCss || cssBlock) {
-        const $styleTag = $("<style>" + baseCss + cssBlock + "\n    </style>");
-        $("head").append($styleTag);
-        stats.responsiveCssMerged++;
-      }
+  // Remove Canva keywords meta
+  $('meta[name="keywords"]').each(function () {
+    const content = $(this).attr("content") || "";
+    if (/^[A-Za-z0-9,\s]+$/.test(content) && content.length < 100) {
+      $(this).remove();
+      stats.canvaKeywordsMetaRemoved++;
     }
-  }
+  });
 
-  // 3c. Remove align="null"
+  // Remove align="null"
   $('[align="null"]').each(function () {
     $(this).removeAttr("align");
     stats.alignNull++;
   });
 
-  // 3c. Fix style attributes
+  // Remove zero-size images
+  $("img").each(function () {
+    const w = $(this).attr("width");
+    const h = $(this).attr("height");
+    if (w === "0" || h === "0") {
+      stats.zeroSizeImages++;
+      const $parent = $(this).parent("a");
+      if ($parent.length && $parent.children().length === 1) $parent.remove();
+      else $(this).remove();
+    }
+  });
+
+  // Remove ses:no-track
+  $("a").each(function () {
+    if ($(this).attr("ses:no-track") !== undefined) {
+      $(this).removeAttr("ses:no-track");
+      stats.sesNoTrackRemoved++;
+    }
+  });
+
+  // Fix style attributes
   $("[style]").each(function () {
     let style = $(this).attr("style");
     if (!style) return;
@@ -196,6 +159,53 @@ export function optimize(raw) {
       /margin-inline-start\s*:\s*([^;]+);?\s*/gi,
       () => { stats.marginInlineFixed++; return ""; }
     );
+
+    // Round fractional pixels: borders→nearest int, everything else→mult of 4
+    style = style.replace(
+      /([\w-]*)\s*:\s*([^;]*?)([\d]*\.[\d]+)px/g,
+      (match, prop, prefix, num) => {
+        const val = parseFloat(num);
+        const isBorder = /border/i.test(prop);
+        let rounded = isBorder ? Math.round(val) : Math.round(val / 4) * 4;
+        const final = rounded === 0 && val > 0 ? (isBorder ? 1 : 4) : rounded;
+        if (final !== val) stats.fractionalPixelsRounded++;
+        return `${prop}:${prefix}${final}px`;
+      }
+    );
+
+    // Round font-size/line-height integers to mult of 4
+    style = style.replace(
+      /(font-size|line-height)\s*:\s*(\d+)px/gi,
+      (match, prop, num) => {
+        const val = parseInt(num, 10);
+        const rounded = Math.round(val / 4) * 4;
+        const final = rounded === 0 && val > 0 ? 4 : rounded;
+        if (final !== val) {
+          stats.fractionalPixelsRounded++;
+          return `${prop}:${final}px`;
+        }
+        return match;
+      }
+    );
+
+    // Convert relative line-heights to fixed pixel
+    style = style.replace(
+      /line-height\s*:\s*([\d.]+)\s*(?:;|$)/gi,
+      (match, val) => {
+        const num = parseFloat(val);
+        if (num > 0 && num < 5 && !match.includes("px") && !match.includes("em") && !match.includes("%")) {
+          const fsMatch = style.match(/font-size\s*:\s*(\d+)px/i);
+          const fontSize = fsMatch ? parseInt(fsMatch[1], 10) : 16;
+          let computed = Math.round(fontSize * num);
+          computed = Math.round(computed / 4) * 4;
+          if (computed === 0) computed = 4;
+          stats.relativeLineHeightsFixed++;
+          return `line-height:${computed}px${match.endsWith(";") ? ";" : ""}`;
+        }
+        return match;
+      }
+    );
+
     style = style.replace(/;\s*;/g, () => { stats.doubleSemicolonsFixed++; return ";"; });
     style = style.replace(/;\s*$/, "").replace(/^\s*;/, "").trim();
 
@@ -203,26 +213,11 @@ export function optimize(raw) {
     else $(this).removeAttr("style");
   });
 
-  // 3d. Fix images
+  // Fix images
   $("img").each(function () {
     const $img = $(this);
-    const w = $img.attr("width");
-    const h = $img.attr("height");
-
-    if (w === "0" || h === "0") {
-      stats.zeroSizeImages++;
-      const $parent = $img.parent("a");
-      if ($parent.length && $parent.children().length === 1) $parent.remove();
-      else $img.remove();
-      return;
-    }
-
-    if (!$img.attr("alt") && $img.attr("alt") !== "") {
-      stats.missingAlt++;
-      $img.attr("alt", "");
-    }
-
     let style = $img.attr("style") || "";
+
     if (!/display\s*:\s*block/i.test(style)) {
       stats.imgDisplayBlock++;
       style = "display:block;" + style;
@@ -233,6 +228,23 @@ export function optimize(raw) {
       style += ";height:auto";
     }
 
+    // Round image dimensions to mult of 4
+    ["width", "height"].forEach((attr) => {
+      const v = $img.attr(attr);
+      if (v) {
+        const val = parseInt(v, 10);
+        if (!isNaN(val) && val > 0) {
+          const rounded = Math.round(val / 4) * 4 || 4;
+          if (rounded !== val) {
+            $img.attr(attr, String(rounded));
+            stats.fractionalPixelsRounded++;
+          }
+        }
+      }
+    });
+
+    if (!$img.attr("alt") && $img.attr("alt") !== "") $img.attr("alt", "");
+
     if ($img.closest("a").length) {
       $img.attr("border", "0");
       if (!/border\s*:/i.test(style)) {
@@ -241,21 +253,9 @@ export function optimize(raw) {
       }
       const $a = $img.closest("a");
       let aStyle = $a.attr("style") || "";
-      if (!/font-size/i.test(aStyle)) aStyle += ";font-size:0";
-      if (!/line-height/i.test(aStyle)) aStyle += ";line-height:0";
       if (!/text-decoration/i.test(aStyle)) aStyle += ";text-decoration:none";
       aStyle = aStyle.replace(/^;/, "").replace(/;\s*;/g, ";");
       $a.attr("style", aStyle);
-
-      const $td = $a.parent("td");
-      if ($td.length) {
-        let tdStyle = $td.attr("style") || "";
-        if (!/font-size/i.test(tdStyle)) {
-          tdStyle += ";font-size:0;line-height:0";
-          tdStyle = tdStyle.replace(/^;/, "");
-          $td.attr("style", tdStyle);
-        }
-      }
     }
 
     style = style.replace(/;\s*;/g, ";").replace(/;\s*$/, "").replace(/^\s*;/, "").trim();
@@ -267,151 +267,59 @@ export function optimize(raw) {
     }
   });
 
-  // 3e. Structural optimization
-  $("tr").each(function () {
-    const cells = $(this).find("> td");
-    if (cells.length === 1) {
-      const cell = cells.first();
-      const inner = cell.html();
-      const style = cell.attr("style") || "";
-      if (inner !== null && inner.trim() === "" && !style) {
-        $(this).remove();
-        stats.emptyRowsRemoved++;
-      }
-    }
-  });
-
-  $("td").each(function () {
-    const $td = $(this);
-    const inner = $td.html();
-    if (!inner) return;
-    const trimmed = inner.trim();
-    const style = $td.attr("style") || "";
-
-    if (/^(<br\s*\/?\s*>[\s]*)+$/i.test(trimmed) && !/height/i.test(style)) {
-      let $row = $td.closest("tr");
-      const $parentTable = $row.closest("table");
-      const $rows = $parentTable.find("> tbody > tr, > tr");
-      if ($rows.length > 1) {
-        $row.remove();
-        stats.emptyContentRemoved++;
-
-        const remaining = $parentTable.find("> tbody > tr, > tr");
-        if (remaining.length === 0) {
-          const $wrapperTd = $parentTable.parent("td");
-          if ($wrapperTd.length) {
-            const $wrapperRow = $wrapperTd.parent("tr");
-            if ($wrapperRow.length) {
-              $wrapperRow.remove();
-              stats.emptyContentRemoved++;
-            }
-          }
-        }
-      }
-    }
-  });
-
-  $("td").each(function () {
-    const $td = $(this);
-    const inner = $td.html();
-    if (!inner) return;
-    const cleaned = inner.replace(/(\s*<br\s*\/?\s*>\s*)+$/i, "");
-    if (cleaned !== inner) $td.html(cleaned);
-  });
-
-  // Collapse passthrough tables
-  for (let pass = 0; pass < 5; pass++) {
-    let collapsed = 0;
-    $("table").each(function () {
-      const $table = $(this);
-      if ($table.attr("class")) return;
-
-      const tbody = $table.find("> tbody");
-      const rowParent = tbody.length ? tbody : $table;
-      const rows = rowParent.children("tr");
-      if (rows.length !== 1) return;
-
-      const cells = rows.first().children("td");
-      if (cells.length !== 1) return;
-
-      const cell = cells.first();
-      const childTables = cell.children("table");
-      if (childTables.length !== 1) return;
-      const otherContent = cell.contents().filter(function () {
-        if ($(this).is("table")) return false;
-        if (this.type === "text" && !$(this).text().trim()) return false;
-        return true;
-      });
-      if (otherContent.length > 0) return;
-
-      const cellStyle = cell.attr("style") || "";
-      if (/padding|background|border(?!-collapse|-spacing)/i.test(cellStyle)) return;
-
-      const tableStyle = $table.attr("style") || "";
-      if (/background/i.test(tableStyle)) return;
-
-      const $inner = childTables.first();
-      const outerWidth = $table.attr("width");
-      if (outerWidth && !$inner.attr("width")) $inner.attr("width", outerWidth);
-
-      $table.replaceWith($inner);
-      collapsed++;
-      stats.passthroughTablesCollapsed++;
-    });
-    stats.tablesRemoved += collapsed;
-    if (collapsed === 0) break;
-  }
-
-  // Simplify image centering
-  $("table").each(function () {
-    const $outer = $(this);
-    const tbody = $outer.find("> tbody");
-    const rowParent = tbody.length ? tbody : $outer;
-    const rows = rowParent.children("tr");
-    if (rows.length !== 1) return;
-
-    const cells = rows.first().children("td");
-    if (cells.length !== 1) return;
-
-    const cell = cells.first();
-    if (cell.attr("align") !== "center") return;
-
-    const innerTables = cell.children("table");
-    if (innerTables.length !== 1) return;
-
-    const $inner = innerTables.first();
-    const innerStyle = $inner.attr("style") || "";
-    if (!/max-width/i.test(innerStyle)) return;
-    const innerTd = $inner.find("> tbody > tr > td, > tr > td").first();
-    if (!innerTd.length) return;
-    if (innerTd.children("img").length !== 1) return;
-    if (innerTd.children().length !== 1) return;
-
-    $inner.attr("align", "center");
-    if (!/margin/i.test(innerStyle)) $inner.attr("style", innerStyle + ";margin:0 auto");
-    $outer.replaceWith($inner);
-    stats.imgCenteringSimplified++;
-  });
-
-  // 3f. MSO table spacing
+  // MSO table spacing
   $("table").each(function () {
     let style = $(this).attr("style") || "";
     if (!/mso-table-lspace/i.test(style)) {
       stats.msoTableSpacing++;
       style += ";mso-table-lspace:0pt;mso-table-rspace:0pt";
       style = style.replace(/^;/, "");
+    }
+    if (!/border-collapse/i.test(style)) {
+      style += ";border-collapse:collapse;border-spacing:0";
+      style = style.replace(/^;/, "");
+    }
+    $(this).attr("style", style);
+  });
+
+  // Mirror background-color to bgcolor
+  $("td, table").each(function () {
+    const style = $(this).attr("style") || "";
+    const bgMatch = style.match(/background-color\s*:\s*(#[0-9a-fA-F]{3,8})/i);
+    if (bgMatch && !$(this).attr("bgcolor")) {
+      $(this).attr("bgcolor", bgMatch[1]);
+      stats.bgcolorMirrored++;
+    }
+  });
+
+  // Add mso-line-height-rule:exactly to text cells
+  $("td").each(function () {
+    let style = $(this).attr("style") || "";
+    if ((style.includes("font-size") || style.includes("line-height")) &&
+        !style.includes("mso-line-height-rule")) {
+      stats.msoLineHeightRuleAdded++;
+      style += ";mso-line-height-rule:exactly";
+      style = style.replace(/^;/, "");
       $(this).attr("style", style);
     }
   });
 
-  // 3f. Clean up link styles
-  $("a").each(function () {
-    // Remove ses:no-track (Amazon SES attribute — invalid XHTML namespace, not needed for D365)
-    if ($(this).attr("ses:no-track") !== undefined) {
-      $(this).removeAttr("ses:no-track");
-      stats.sesNoTrackRemoved++;
+  // Add mso-para-margin resets to divs
+  $("div").each(function () {
+    let style = $(this).attr("style") || "";
+    if (!style.includes("mso-para-margin")) {
+      stats.msoParaMarginAdded++;
+      if (!/\bmargin\s*:/i.test(style)) {
+        style = "margin:0;padding:0;" + style;
+      }
+      style += ";mso-para-margin:0;mso-margin-top-alt:0;mso-margin-bottom-alt:0";
+      style = style.replace(/^;/, "").replace(/;\s*;/g, ";");
+      $(this).attr("style", style);
     }
+  });
 
+  // Clean link styles
+  $("a").each(function () {
     let style = $(this).attr("style") || "";
     style = style.replace(
       /\b(marginLeft|marginRight|marginTop|marginBottom)\s*:\s*[^;]*;?\s*/gi, ""
@@ -421,102 +329,157 @@ export function optimize(raw) {
     else $(this).removeAttr("style");
   });
 
-  // 3g. D365 content block markers
-  {
-    const d365Metas = [
-      '<meta type="xrm/designer/setting" name="type" value="marketing-designer-content-editor-document">',
-      '<meta type="xrm/designer/setting" name="layout-editable" value="marketing-designer-layout-editable">',
-      '<meta type="xrm/designer/setting" name="layout-max-width" value="600px" datatype="text" label="Layout max width">',
-    ];
-    d365Metas.forEach((meta) => $("head").append(meta));
+  // Consolidate spacer rows into padding
+  $("tr").each(function () {
+    const $tr = $(this);
+    const $tds = $tr.children("td");
+    if ($tds.length !== 1) return;
 
-    const $body = $("body");
-    const bodyContents = $body.html();
-    $body.html(
-      '<div data-layout="true" data-layout-version="v2" style="max-width:600px;margin:auto;">' +
-        bodyContents +
-        "</div>"
-    );
+    const $td = $tds.first();
+    const style = $td.attr("style") || "";
+    const text = $td.text().trim();
 
-    let containerId = 0;
-    function nextContainerId() {
-      containerId++;
-      return "container" + Date.now().toString(36) + containerId.toString(36);
-    }
+    const heightMatch = style.match(/height\s*:\s*(\d+)px/i);
+    if (!heightMatch) return;
+    if (!/font-size\s*:\s*0/i.test(style)) return;
+    if (text !== "" && text !== "\u00a0" && text !== "&nbsp;") return;
 
-    function detectBlockType($el) {
-      if ($el.find("img").length && !$el.find("a.buttonClass").length) return "Image";
-      if ($el.find("a").length && $el.find("img").length === 0) return "Button";
-      return "Text";
-    }
+    const spacerHeight = parseInt(heightMatch[1], 10);
 
-    const $layout = $('div[data-layout="true"]');
-    const topTables = $layout.children("table");
-
-    topTables.each(function () {
-      const $table = $(this);
-      const $rows = $table.find("> tbody > tr, > tr");
-
-      $rows.each(function () {
-        $(this).children("td").each(function () {
-          const $td = $(this);
-          const text = $td.text().trim();
-          const hasImg = $td.find("img").length > 0;
-          const hasLink = $td.find("a").length > 0;
-          const isSpacerOnly =
-            !text && !hasImg && !hasLink && /^\s*(&nbsp;)?\s*$/i.test($td.html() || "");
-
-          if (isSpacerOnly) return;
-
-          const blockType = detectBlockType($td);
-
-          if (!$td.find("[data-editorblocktype]").length) {
-            const inner = $td.html();
-            $td.html(
-              '<div data-editorblocktype="' + blockType + '" style="margin:0;">' + inner + "</div>"
-            );
-          }
-
-          if (!$td.attr("data-container")) {
-            $td.attr("data-container", "true");
-            $td.attr("id", nextContainerId());
-          }
-        });
-      });
-
-      if (!$table.parent('[data-section="true"]').length) {
-        const bgMatch = ($table.attr("style") || "").match(/background-color\s*:\s*([^;]+)/i);
-        const bgColor = bgMatch ? bgMatch[1].trim() : "transparent";
-        const $section = $(
-          '<div data-section="true" class="columns-equal-class wrap-section" style="margin:0;border-radius:0;background-color:' +
-            bgColor +
-            ';"></div>'
-        );
-        $table.before($section);
-        $section.append($table);
+    const $nextTr = $tr.next("tr");
+    if ($nextTr.length) {
+      const $nextTd = $nextTr.children("td").first();
+      if ($nextTd.length) {
+        let nextStyle = $nextTd.attr("style") || "";
+        const ptMatch = nextStyle.match(/padding-top\s*:\s*(\d+)px/i);
+        if (ptMatch) {
+          const newPt = parseInt(ptMatch[1], 10) + spacerHeight;
+          nextStyle = nextStyle.replace(/padding-top\s*:\s*\d+px/i, `padding-top:${newPt}px`);
+        } else {
+          nextStyle = `padding-top:${spacerHeight}px;` + nextStyle;
+        }
+        $nextTd.attr("style", nextStyle);
+        $tr.remove();
+        stats.spacerRowsConsolidated++;
+        return;
       }
-    });
+    }
 
-    stats.d365MarkersAdded = topTables.length;
+    const $prevTr = $tr.prev("tr");
+    if ($prevTr.length) {
+      const $prevTd = $prevTr.children("td").last();
+      if ($prevTd.length) {
+        let prevStyle = $prevTd.attr("style") || "";
+        const pbMatch = prevStyle.match(/padding-bottom\s*:\s*(\d+)px/i);
+        if (pbMatch) {
+          const newPb = parseInt(pbMatch[1], 10) + spacerHeight;
+          prevStyle = prevStyle.replace(/padding-bottom\s*:\s*\d+px/i, `padding-bottom:${newPb}px`);
+        } else {
+          prevStyle += `;padding-bottom:${spacerHeight}px`;
+        }
+        prevStyle = prevStyle.replace(/^;/, "").replace(/;\s*;/g, ";");
+        $prevTd.attr("style", prevStyle);
+        $tr.remove();
+        stats.spacerRowsConsolidated++;
+      }
+    }
+  });
+
+  // Unwrap empty spans
+  $("span").each(function () {
+    const style = ($(this).attr("style") || "").trim();
+    const attrKeys = Object.keys($(this).get(0)?.attribs || {}).filter(k => k !== "style");
+    if (!style && attrKeys.length === 0) {
+      $(this).replaceWith($(this).html());
+    }
+  });
+
+  // Remove trailing <br> in td
+  $("td").each(function () {
+    const h = $(this).html();
+    if (h && h.endsWith("<br>")) $(this).html(h.slice(0, -4));
+  });
+
+  // Phase 3 - Inject head content
+  const $head = $("head");
+
+  // D365 designer meta
+  if (!$('meta[type="xrm/designer/setting"]').length) {
+    $head.append('\n  <meta type="xrm/designer/setting" name="type" value="marketing-designer-content-editor-document">');
+    stats.d365MetaAdded++;
+  }
+
+  if (!$('meta[charset]').length && !$('meta[http-equiv="Content-Type"]').length) {
+    $head.prepend('\n  <meta charset="utf-8">');
+  }
+
+  // Remove existing MSO blocks from head, inject clean one
+  let headHtml = $head.html() || "";
+  const origHead = headHtml;
+  headHtml = headHtml.replace(/<!--\[if\s+mso\]>[\s\S]*?<!\[endif\]-->/gi, "");
+  if (headHtml !== origHead) $head.html(headHtml);
+
+  const existingStyles = $head.html() || "";
+  if (!existingStyles.includes("line-height: 100% !important") &&
+      !existingStyles.includes("line-height:100% !important")) {
+    const msoStyles = `
+  <!--[if mso]>
+  <noscript>
+    <xml>
+      <o:OfficeDocumentSettings>
+        <o:AllowPNG/>
+        <o:PixelsPerInch>96</o:PixelsPerInch>
+      </o:OfficeDocumentSettings>
+    </xml>
+  </noscript>
+  <style type="text/css">
+    body, table, td, th, p, div, span, a { line-height: 100% !important; }
+    table { border-collapse: collapse !important; border-spacing: 0 !important; mso-table-lspace: 0pt !important; mso-table-rspace: 0pt !important; }
+    td { border-collapse: collapse !important; }
+    div, p { margin: 0 !important; padding: 0 !important; mso-para-margin: 0 !important; mso-margin-top-alt: 0 !important; mso-margin-bottom-alt: 0 !important; mso-line-height-rule: exactly !important; }
+  </style>
+  <![endif]-->`;
+    const $lastMeta = $head.find("meta").last();
+    if ($lastMeta.length) $lastMeta.after(msoStyles);
+    else $head.prepend(msoStyles);
+    stats.msoHeadStylesAdded++;
+  }
+
+  // Global CSS resets + responsive
+  if (!existingStyles.includes("-webkit-text-size-adjust")) {
+    $head.append(`
+  <style>
+    body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+    table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; border-collapse: collapse; border-spacing: 0; }
+    img { -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; display: block; }
+    body { margin: 0; padding: 0; width: 100%; }
+    div { margin: 0; padding: 0; mso-para-margin: 0; mso-margin-top-alt: 0; mso-margin-bottom-alt: 0; }
+    @media only screen and (max-width: 600px) {
+      .email-wrapper { width: 100% !important; }
+      .stack-col { display: block !important; width: 100% !important; max-width: 100% !important; }
+      .stack-col-logo { display: block !important; width: 100% !important; max-width: 100% !important; text-align: center !important; }
+    }
+  </style>`);
+    stats.responsiveStylesAdded++;
   }
 
   // Phase 4 - Serialize & cleanup
   let output = $.html();
 
-  output = output.replace(/<!DOCTYPE[^>]*>/i, originalDoctype);
-
-  // Remove any remaining ses:no-track attributes (invalid namespaced attr)
+  output = output.replace(/<!DOCTYPE[^>]*>/i, "<!DOCTYPE html>");
+  output = output.replace(
+    /<html[^>]*>/i,
+    '<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">'
+  );
   output = output.replace(/\s+ses:no-track="[^"]*"/gi, "");
-
+  output = output.replace(/\s+ses:no-track(?=[>\s])/gi, "");
+  output = output.replace(/<!--\[if !mso\]><!-->([\s\S]*?)<!--<!\[endif\]-->/gi, "$1");
+  output = output.replace(/<!--\[if !mso\]><!-->\s*<!--<!\[endif\]-->\s*/g, "");
+  output = output.replace(/;\s*;/g, ";");
   output = output
     .replace(/(<\/table>)/gi, "$1\n")
     .replace(/(<\/tr>)/gi, "$1\n")
-    .replace(/(<\/td>)/gi, "$1\n")
-    .replace(/(<!--\[endif\]-->)/gi, "$1\n")
-    .replace(/(<!--<!\[endif\]-->)/gi, "$1\n");
-
-  output = output.replace(/<!--\[if !mso\]><!-->\s*<!--<!\[endif\]-->\s*/g, "");
-  output = output.replace(/;\s*;/g, ";");
+    .replace(/(<!--\[endif\]-->)/gi, "$1\n");
   output = output.replace(/\n{3,}/g, "\n\n");
 
   const inputSize = new Blob([raw]).size;
@@ -526,30 +489,40 @@ export function optimize(raw) {
 }
 
 export const statLabels = {
+  // Canva cleanup
+  duplicateMobileBlocksRemoved: "duplicate mobile blocks removed (single-source responsive)",
+  conditionalCommentsRemovedFromBody: "conditional comments removed from body (D365 compat)",
+  zeroSizeImages: "zero-size images removed (mobile placeholders)",
+  preloadLinksRemoved: "link preload tags removed",
+  sesNoTrackRemoved: "ses:no-track removed (invalid XHTML)",
+  canvaKeywordsMetaRemoved: "Canva keywords meta removed",
+
+  // Style cleanup
   invalidStyleProps: "invalid JS-style properties removed",
   negativeBorders: "negative border values removed",
   redundantBorderRadius: "redundant border-radius:0 removed",
   alignNull: 'align="null" removed',
   preWrapFixed: "white-space:pre-wrap removed",
   undefinedMargins: "undefined margin values removed",
-  zeroSizeImages: "zero-size images removed",
-  missingAlt: "missing alt attributes added",
   minHeightRemoved: "min-height removed from tables",
-  preloadLinksRemoved: "link preload tags removed (useless in email)",
   multilinePaddingFixed: "multi-line padding values collapsed",
-  marginInlineFixed: "margin-inline-start removed (no Outlook support)",
+  marginInlineFixed: "margin-inline-start removed",
   doubleSemicolonsFixed: "double semicolons cleaned",
+  dataSrcRemoved: "data-src attributes removed",
+  fractionalPixelsRounded: "pixel values rounded to multiples of 4",
+  relativeLineHeightsFixed: "relative line-heights → fixed px",
+
+  // Outlook fixes
+  msoLineHeightRuleAdded: "mso-line-height-rule:exactly added",
   imgDisplayBlock: "display:block added to images",
   imgBorderFixed: "border:0 added to linked images",
-  msoTableSpacing: "MSO table spacing added (Outlook fix)",
-  dataSrcRemoved: "data-src attributes removed",
-  passthroughTablesCollapsed: "passthrough wrapper tables collapsed",
-  emptyRowsRemoved: "empty rows removed",
-  emptyContentRemoved: "empty content wrappers removed (<br> only)",
-  imgCenteringSimplified: "image centering tables simplified",
-  tablesRemoved: "total tables eliminated",
-  mobileDupesRemoved: "mobile duplicate blocks removed",
-  responsiveCssMerged: "responsive CSS consolidated",
-  sesNoTrackRemoved: "ses:no-track removed (invalid XHTML namespace)",
-  d365MarkersAdded: "D365 content block sections created",
+  msoTableSpacing: "MSO table spacing added",
+  bgcolorMirrored: "bgcolor mirrored from CSS background-color",
+  msoParaMarginAdded: "mso-para-margin reset added to divs",
+  spacerRowsConsolidated: "spacer rows → padding",
+
+  // D365
+  d365MetaAdded: "D365 designer meta tag added",
+  msoHeadStylesAdded: "MSO conditional styles injected",
+  responsiveStylesAdded: "responsive CSS injected",
 };

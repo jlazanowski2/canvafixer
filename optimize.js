@@ -2,9 +2,12 @@
 /**
  * CanvaFixer - Optimizes Canva HTML email exports for email clients.
  * Targets: Outlook (Word engine), Gmail, iOS Mail, webmail clients.
+ * Compatible with Dynamics 365 Customer Insights - Journeys email editor.
  *
  * Usage: node optimize.js input.html [output.html]
  *   If output is omitted, writes to input.optimized.html
+ *
+ * Rules reference: See memory/email-optimization-rules.md for full details.
  */
 
 const fs = require("fs");
@@ -29,233 +32,181 @@ const raw = fs.readFileSync(inputFile, "utf-8");
 // Counters for reporting
 // ---------------------------------------------------------------------------
 const stats = {
+  // Canva cleanup
+  duplicateMobileBlocksRemoved: 0,
+  conditionalCommentsRemovedFromBody: 0,
+  zeroSizeImages: 0,
+  preloadLinksRemoved: 0,
+  sesNoTrackRemoved: 0,
+  canvaKeywordsMetaRemoved: 0,
+
+  // Style cleanup
   invalidStyleProps: 0,
   negativeBorders: 0,
   redundantBorderRadius: 0,
   alignNull: 0,
   preWrapFixed: 0,
   undefinedMargins: 0,
-  zeroSizeImages: 0,
-  missingAlt: 0,
   minHeightRemoved: 0,
-  preloadLinksRemoved: 0,
   multilinePaddingFixed: 0,
   marginInlineFixed: 0,
   doubleSemicolonsFixed: 0,
+  dataSrcRemoved: 0,
+
+  // Outlook fixes
+  fractionalPixelsRounded: 0,
+  relativeLineHeightsFixed: 0,
+  msoLineHeightRuleAdded: 0,
   imgDisplayBlock: 0,
   imgBorderFixed: 0,
   msoTableSpacing: 0,
-  dataSrcRemoved: 0,
-  passthroughTablesCollapsed: 0,
-  emptyRowsRemoved: 0,
-  emptyContentRemoved: 0,
-  imgCenteringSimplified: 0,
-  tablesRemoved: 0,
-  mobileDupesRemoved: 0,
-  responsiveCssMerged: 0,
-  sesNoTrackRemoved: 0,
+  bgcolorMirrored: 0,
+  msoParaMarginAdded: 0,
+  spacerRowsConsolidated: 0,
+
+  // D365 additions
+  d365MetaAdded: 0,
+  d365ContainerWrapped: 0,
+  msoHeadStylesAdded: 0,
+  responsiveStylesAdded: 0,
 };
 
 // ---------------------------------------------------------------------------
-// Phase 1 - Preserve the original DOCTYPE
-//   Cheerio may mangle the DOCTYPE, so we capture it and restore later.
-// ---------------------------------------------------------------------------
-// Force HTML5 DOCTYPE — XHTML Transitional causes D365 to validate strictly,
-// but D365's own editor outputs HTML5-style markup (non-self-closed tags),
-// which fails XHTML validation. HTML5 DOCTYPE avoids this entirely and
-// email clients don't care about the DOCTYPE.
-const originalDoctype = "<!DOCTYPE html>";
-
-// ---------------------------------------------------------------------------
-// Phase 2 - Raw string fixes (before DOM parse)
+// Phase 1 - Raw string pre-processing (before DOM parse)
 // ---------------------------------------------------------------------------
 let html = raw;
 
 // Fix camelCase inline-style properties leaked from React/JS
-// e.g.  marginLeft: undefined;  marginRight: undefined;
 html = html.replace(
   /\b(marginLeft|marginRight|marginTop|marginBottom)\s*:\s*undefined\s*;?\s*/gi,
-  () => {
-    stats.undefinedMargins++;
-    return "";
-  }
+  () => { stats.undefinedMargins++; return ""; }
 );
 
 // Fix negative border values (invalid CSS)
 html = html.replace(
   /border-(top|bottom|left|right)\s*:\s*-[\d.]+px\s+solid\s+#[0-9a-fA-F]+\s*;?\s*/gi,
-  () => {
-    stats.negativeBorders++;
-    return "";
-  }
+  () => { stats.negativeBorders++; return ""; }
 );
 
 // Fix multi-line padding values (Canva sometimes splits padding across lines)
 html = html.replace(
   /padding\s*:\s*([\d.]+px)\s*\n\s*([\d.]+px)\s*\n\s*([\d.]+px)\s*\n\s*([\d.]+px)/gi,
-  (_, t, r, b, l) => {
-    stats.multilinePaddingFixed++;
-    return `padding:${t} ${r} ${b} ${l}`;
-  }
+  (_, t, r, b, l) => { stats.multilinePaddingFixed++; return `padding:${t} ${r} ${b} ${l}`; }
 );
 
+// Remove conditional comments from body (D365 strips these anyway)
+// Keep them in <head> only
+html = html.replace(
+  /(<body[\s\S]*?)<!--\[if\s+(?:!)?mso\]>[\s\S]*?<!\[endif\]-->/gi,
+  (match, prefix) => {
+    // Only remove if this is actually inside the body
+    if (prefix.includes("<body")) {
+      stats.conditionalCommentsRemovedFromBody++;
+      return prefix;
+    }
+    return match;
+  }
+);
+// More targeted: remove <!--[if mso]>...<![endif]--> and <!--[if !mso]><!--> ... <!--<![endif]--> from body
+// We do this after DOM parse for accuracy.
+
 // ---------------------------------------------------------------------------
-// Phase 3 - DOM-level fixes via cheerio
+// Phase 2 - DOM-level fixes via cheerio
 // ---------------------------------------------------------------------------
 const $ = cheerio.load(html, { xml: false, decodeEntities: false });
 
-// 3a. Remove <link rel="preload"> (not useful in email clients) -------------
+// ===== 2a. Remove Canva duplicate mobile blocks ============================
+// Canva creates pairs: .layout-X (desktop, display:table) and
+// .layout-X-under-Y (mobile, display:none with max-width:Ypx media query).
+// We keep desktop and remove mobile duplicates for single-source responsive.
+$('[class*="-under-"]').each(function () {
+  const cls = $(this).attr("class") || "";
+  if (/layout-\d+-under-\d+/i.test(cls)) {
+    stats.duplicateMobileBlocksRemoved++;
+    $(this).remove();
+  }
+});
+
+// Also remove the associated media query style blocks that reference these
+// They appear as <!--[if !mso]><!--><style>@media (max-width:...) { .layout-X-under-Y ... }</style><!--<![endif]-->
+// The conditional comment wrappers in head were already handled or will be cleaned below.
+
+// Remove <style> blocks that only contain layout-X/layout-X-under-Y media queries
+$("style").each(function () {
+  const content = $(this).html() || "";
+  // If the style block ONLY has layout show/hide rules, remove it entirely
+  if (/^\s*@media[^{]*\{[\s\S]*?layout-\d+(-under-\d+)?[\s\S]*?\}\s*$/i.test(content) &&
+      !/[^.#\w-](?!layout-)\w+\s*\{/i.test(content)) {
+    $(this).remove();
+  }
+});
+
+// ===== 2b. Remove conditional comment wrappers from body ===================
+// D365 strips these. We handle them as text nodes around style/table elements.
+// Cheerio doesn't parse conditional comments well, so we'll handle in Phase 4.
+
+// ===== 2c. Remove <link rel="preload"> ====================================
 $('link[rel="preload"]').each(function () {
   $(this).remove();
   stats.preloadLinksRemoved++;
 });
 
-// 3b. Merge duplicate desktop/mobile blocks into single responsive blocks ---
-// Canva creates pairs: .layout-X (desktop, display:table) and
-// .layout-X-under-Y (mobile, display:none) with identical content.
-// We keep the desktop block, make it fluid/responsive with CSS, and delete
-// the mobile duplicate entirely.
-{
-  // Collect all layout class pairs
-  const desktopBlocks = [];
-  $("table[class]").each(function () {
-    const cls = $(this).attr("class") || "";
-    // Match desktop blocks like "layout-0", "layout-1", "layout-2"
-    // but NOT the mobile ones like "layout-0-under-1"
-    if (/^layout-\d+$/.test(cls)) {
-      desktopBlocks.push({ cls, el: $(this) });
-    }
-  });
-
-  // Track breakpoints needed for responsive CSS
-  const responsiveRules = [];
-
-  desktopBlocks.forEach(({ cls, el }) => {
-    // Find the matching mobile duplicate
-    const mobileSelector = `table[class^="${cls}-under-"]`;
-    const $mobile = $(mobileSelector);
-    if (!$mobile.length) return;
-
-    // Extract the breakpoint from the mobile class (e.g., "layout-1-under-450" -> 450)
-    const mobileClass = $mobile.attr("class") || "";
-    const bpMatch = mobileClass.match(/under-(\d+)/);
-    const breakpoint = bpMatch ? parseInt(bpMatch[1], 10) : 450;
-
-    // Make the desktop block fluid instead of fixed display:table
-    let style = el.attr("style") || "";
-    // Remove display:table (let it be a normal block-level table)
-    style = style.replace(/display\s*:\s*table\s*;?\s*/gi, "");
-    style = style.trim().replace(/;$/, "");
-    if (style) el.attr("style", style);
-    else el.removeAttr("style");
-
-    // Remove the class from the desktop block (no longer needed for show/hide)
-    // Give it a new clean class for responsive targeting
-    const responsiveClass = `responsive-${cls}`;
-    el.attr("class", responsiveClass);
-
-    // Check if this is a multi-column layout (has multiple td siblings in any row)
-    let hasMultiCol = false;
-    el.find("tr").each(function () {
-      const tds = $(this).children("td");
-      if (tds.length > 1) hasMultiCol = true;
-    });
-
-    // Build responsive CSS rules for this block
-    // Use a sensible breakpoint — Canva sometimes sets 1px (= never triggers)
-    const mobileBp = breakpoint < 100 ? 480 : breakpoint;
-
-    if (hasMultiCol) {
-      // Multi-column: stack columns on mobile, center content
-      responsiveRules.push({
-        breakpoint: mobileBp,
-        css:
-          `.${responsiveClass} td { display: block !important; width: 100% !important; box-sizing: border-box !important; text-align: center !important; }` +
-          `\n        .${responsiveClass} td[width="4"] { display: none !important; }` +
-          `\n        .${responsiveClass} table { margin: 0 auto !important; }`,
-      });
-    }
-
-    // Remove the mobile duplicate and its surrounding MSO conditional comments
-    // The mobile block is wrapped in <!--[if !mso]><!--> ... <!--<![endif]-->
-    $mobile.remove();
-    stats.mobileDupesRemoved++;
-  });
-
-  // Replace Canva's original show/hide media queries with our fluid responsive CSS
-  if (responsiveRules.length > 0 || desktopBlocks.length > 0) {
-    // Remove all existing Canva layout style blocks
-    $("style").each(function () {
-      const content = $(this).html() || "";
-      if (/layout-\d+/i.test(content)) {
-        $(this).remove();
-      }
-    });
-
-    // Global mobile rules to prevent overflow and center content
-    const prelimBps = [...new Set(responsiveRules.map((r) => r.breakpoint))];
-    const globalBp = Math.max(...prelimBps, 480);
-    responsiveRules.push({
-      breakpoint: globalBp,
-      css:
-        `table { max-width: 100% !important; }` +
-        `\n        img { max-width: 100% !important; height: auto !important; }` +
-        `\n        td { box-sizing: border-box !important; }`,
-    });
-
-    // Build consolidated responsive stylesheet
-    const allBreakpoints = [...new Set(responsiveRules.map((r) => r.breakpoint))];
-    let cssBlock = "";
-    allBreakpoints.forEach((bp) => {
-      const rules = responsiveRules.filter((r) => r.breakpoint === bp);
-      cssBlock +=
-        `\n      @media screen and (max-width: ${bp}px) {\n        ` +
-        rules.map((r) => r.css).join("\n        ") +
-        `\n      }`;
-    });
-
-    // Add base fluid styles for all responsive blocks
-    let baseCss = "";
-    desktopBlocks.forEach(({ cls }) => {
-      baseCss += `\n      .responsive-${cls} { width: 100% !important; }`;
-    });
-
-    if (baseCss || cssBlock) {
-      const $styleTag = $("<style>" + baseCss + cssBlock + "\n    </style>");
-      // Insert before closing </head> — find last element in head
-      $("head").append($styleTag);
-      stats.responsiveCssMerged++;
-    }
+// ===== 2d. Remove Canva keywords meta tag ==================================
+$('meta[name="keywords"]').each(function () {
+  const content = $(this).attr("content") || "";
+  // Canva embeds design IDs like "DAHDpQgLzFE, BACyAhU2FKc"
+  if (/^[A-Za-z0-9,\s]+$/.test(content) && content.length < 100) {
+    $(this).remove();
+    stats.canvaKeywordsMetaRemoved++;
   }
-}
+});
 
-// 3c. Remove align="null" ---------------------------------------------------
+// ===== 2e. Remove align="null" =============================================
 $('[align="null"]').each(function () {
   $(this).removeAttr("align");
   stats.alignNull++;
 });
 
-// 3c. Fix style attributes --------------------------------------------------
+// ===== 2f. Remove zero-size images (Canva mobile placeholders) =============
+$("img").each(function () {
+  const $img = $(this);
+  const w = $img.attr("width");
+  const h = $img.attr("height");
+
+  if (w === "0" || h === "0") {
+    stats.zeroSizeImages++;
+    const $parent = $img.parent("a");
+    if ($parent.length && $parent.children().length === 1) {
+      $parent.remove();
+    } else {
+      $img.remove();
+    }
+  }
+});
+
+// ===== 2g. Remove ses:no-track attributes ==================================
+$("a").each(function () {
+  if ($(this).attr("ses:no-track") !== undefined) {
+    $(this).removeAttr("ses:no-track");
+    stats.sesNoTrackRemoved++;
+  }
+});
+
+// ===== 2h. Fix style attributes ============================================
 $("[style]").each(function () {
   let style = $(this).attr("style");
   if (!style) return;
 
-  // Remove leftover camelCase properties (catch any the regex missed)
+  // Remove leftover camelCase properties
   style = style.replace(
     /\b(marginLeft|marginRight|marginTop|marginBottom)\s*:\s*[^;]*;?\s*/gi,
-    () => {
-      stats.invalidStyleProps++;
-      return "";
-    }
+    () => { stats.invalidStyleProps++; return ""; }
   );
 
   // Remove border-radius: 0 / 0px (adds no value, just bloat)
   style = style.replace(
     /border-(top-left|top-right|bottom-left|bottom-right)-radius\s*:\s*0(px)?\s*;?\s*/gi,
-    () => {
-      stats.redundantBorderRadius++;
-      return "";
-    }
+    () => { stats.redundantBorderRadius++; return ""; }
   );
   style = style.replace(/border-radius\s*:\s*0(px)?\s*;?\s*/gi, () => {
     stats.redundantBorderRadius++;
@@ -276,20 +227,76 @@ $("[style]").each(function () {
     });
   }
 
-  // Fix margin-inline-start (not supported in Outlook) -> padding-left
+  // Fix margin-inline-start (not supported in Outlook)
   style = style.replace(
     /margin-inline-start\s*:\s*([^;]+);?\s*/gi,
-    (_, val) => {
-      stats.marginInlineFixed++;
-      return "";
+    () => { stats.marginInlineFixed++; return ""; }
+  );
+
+  // Round fractional pixel values:
+  // - font-size, line-height, height, padding, width → nearest multiple of 4
+  // - border widths → nearest integer (don't over-round small borders)
+  style = style.replace(
+    /([\w-]*)\s*:\s*([^;]*?)([\d]*\.[\d]+)px/g,
+    (match, prop, prefix, num) => {
+      const val = parseFloat(num);
+      const isBorder = /border/i.test(prop);
+      let rounded;
+      if (isBorder) {
+        // Borders: round to nearest integer only
+        rounded = Math.round(val);
+      } else {
+        // Everything else: round to nearest multiple of 4
+        rounded = Math.round(val / 4) * 4;
+      }
+      // Don't round non-zero values to 0
+      const final = rounded === 0 && val > 0 ? (isBorder ? 1 : 4) : rounded;
+      if (final !== val) {
+        stats.fractionalPixelsRounded++;
+      }
+      return `${prop}:${prefix}${final}px`;
+    }
+  );
+
+  // Also round non-fractional odd pixel values in font-size and line-height to nearest mult of 4
+  style = style.replace(
+    /(font-size|line-height)\s*:\s*(\d+)px/gi,
+    (match, prop, num) => {
+      const val = parseInt(num, 10);
+      const rounded = Math.round(val / 4) * 4;
+      const final = rounded === 0 && val > 0 ? 4 : rounded;
+      if (final !== val) {
+        stats.fractionalPixelsRounded++;
+        return `${prop}:${final}px`;
+      }
+      return match;
+    }
+  );
+
+  // Convert relative line-heights to fixed pixel values
+  // e.g. line-height:1.4 with font-size:16px → line-height:24px
+  style = style.replace(
+    /line-height\s*:\s*([\d.]+)\s*(?:;|$)/gi,
+    (match, val) => {
+      const num = parseFloat(val);
+      // Only convert if it looks like a relative value (< 5, not in px/em/%)
+      if (num > 0 && num < 5 && !match.includes("px") && !match.includes("em") && !match.includes("%")) {
+        // Try to find font-size in same style string
+        const fsMatch = style.match(/font-size\s*:\s*(\d+)px/i);
+        const fontSize = fsMatch ? parseInt(fsMatch[1], 10) : 16;
+        let computed = Math.round(fontSize * num);
+        // Round to nearest multiple of 4
+        computed = Math.round(computed / 4) * 4;
+        if (computed === 0) computed = 4;
+        stats.relativeLineHeightsFixed++;
+        return `line-height:${computed}px${match.endsWith(";") ? ";" : ""}`;
+      }
+      return match;
     }
   );
 
   // Clean up double/trailing semicolons from removals
-  style = style.replace(/;\s*;/g, () => {
-    stats.doubleSemicolonsFixed++;
-    return ";";
-  });
+  style = style.replace(/;\s*;/g, () => { stats.doubleSemicolonsFixed++; return ";"; });
   style = style.replace(/;\s*$/, "").replace(/^\s*;/, "").trim();
 
   if (style) {
@@ -299,32 +306,12 @@ $("[style]").each(function () {
   }
 });
 
-// 3d. Fix images -------------------------------------------------------------
+// ===== 2i. Fix images ======================================================
 $("img").each(function () {
   const $img = $(this);
-  const w = $img.attr("width");
-  const h = $img.attr("height");
-
-  // Remove zero-dimension images (Canva mobile placeholders)
-  if (w === "0" || h === "0") {
-    stats.zeroSizeImages++;
-    const $parent = $img.parent("a");
-    if ($parent.length && $parent.children().length === 1) {
-      $parent.remove();
-    } else {
-      $img.remove();
-    }
-    return;
-  }
-
-  // Add missing alt text (empty alt is better than no alt for accessibility)
-  if (!$img.attr("alt") && $img.attr("alt") !== "") {
-    stats.missingAlt++;
-    $img.attr("alt", "");
-  }
+  let style = $img.attr("style") || "";
 
   // Ensure display:block on all images (prevents gaps in Outlook/Gmail)
-  let style = $img.attr("style") || "";
   if (!/display\s*:\s*block/i.test(style)) {
     stats.imgDisplayBlock++;
     style = "display:block;" + style;
@@ -341,8 +328,36 @@ $("img").each(function () {
     style += ";height:auto";
   }
 
-  // Ensure border:0 for linked images (prevents blue border in older clients)
-  // Also fix Outlook phantom underline by zeroing font-size/line-height on the <a>
+  // Round image width/height attributes to multiples of 4
+  const w = $img.attr("width");
+  const h = $img.attr("height");
+  if (w) {
+    const wVal = parseInt(w, 10);
+    if (!isNaN(wVal) && wVal > 0) {
+      const rounded = Math.round(wVal / 4) * 4 || 4;
+      if (rounded !== wVal) {
+        $img.attr("width", String(rounded));
+        stats.fractionalPixelsRounded++;
+      }
+    }
+  }
+  if (h) {
+    const hVal = parseInt(h, 10);
+    if (!isNaN(hVal) && hVal > 0) {
+      const rounded = Math.round(hVal / 4) * 4 || 4;
+      if (rounded !== hVal) {
+        $img.attr("height", String(rounded));
+        stats.fractionalPixelsRounded++;
+      }
+    }
+  }
+
+  // Add missing alt text
+  if (!$img.attr("alt") && $img.attr("alt") !== "") {
+    $img.attr("alt", "");
+  }
+
+  // Ensure border:0 for linked images + Outlook phantom underline fix
   if ($img.closest("a").length) {
     $img.attr("border", "0");
     if (!/border\s*:/i.test(style)) {
@@ -352,32 +367,12 @@ $("img").each(function () {
 
     const $a = $img.closest("a");
     let aStyle = $a.attr("style") || "";
-    // Kill Outlook's phantom underline: zero out font-size and line-height on the link
-    if (!/font-size/i.test(aStyle)) {
-      aStyle += ";font-size:0";
-    }
-    if (!/line-height/i.test(aStyle)) {
-      aStyle += ";line-height:0";
-    }
-    if (!/text-decoration/i.test(aStyle)) {
-      aStyle += ";text-decoration:none";
-    }
+    if (!/text-decoration/i.test(aStyle)) aStyle += ";text-decoration:none";
     aStyle = aStyle.replace(/^;/, "").replace(/;\s*;/g, ";");
     $a.attr("style", aStyle);
-
-    // Also set the parent td's line-height to 0 to prevent Outlook spacing
-    const $td = $a.parent("td");
-    if ($td.length) {
-      let tdStyle = $td.attr("style") || "";
-      if (!/font-size/i.test(tdStyle)) {
-        tdStyle += ";font-size:0;line-height:0";
-        tdStyle = tdStyle.replace(/^;/, "");
-        $td.attr("style", tdStyle);
-      }
-    }
   }
 
-  // Clean up double semicolons in image styles
+  // Clean up
   style = style.replace(/;\s*;/g, ";").replace(/;\s*$/, "").replace(/^\s*;/, "").trim();
   $img.attr("style", style);
 
@@ -388,309 +383,281 @@ $("img").each(function () {
   }
 });
 
-// 3e. Structural HTML optimization ------------------------------------------
-// Remove completely empty rows (no content, no height spacer)
-$("tr").each(function () {
-  const cells = $(this).find("> td");
-  if (cells.length === 1) {
-    const cell = cells.first();
-    const inner = cell.html();
-    const style = cell.attr("style") || "";
-    // Only remove if truly empty (no content, no height/font-size spacer)
-    if (inner !== null && inner.trim() === "" && !style) {
-      $(this).remove();
-      stats.emptyRowsRemoved++;
-    }
-  }
-});
-
-// Remove rows whose only content is <br> tags (Canva empty placeholders).
-// Also remove the parent wrapper row/table if it becomes empty.
-$("td").each(function () {
-  const $td = $(this);
-  const inner = $td.html();
-  if (!inner) return;
-  const trimmed = inner.trim();
-  const style = $td.attr("style") || "";
-
-  // Match cells that contain ONLY <br> tags (not spacer &nbsp; cells which have height)
-  if (/^(<br\s*\/?\s*>[\s]*)+$/i.test(trimmed) && !/height/i.test(style)) {
-    // Remove the entire row containing this td
-    let $row = $td.closest("tr");
-    const $parentTable = $row.closest("table");
-    const $rows = $parentTable.find("> tbody > tr, > tr");
-    if ($rows.length > 1) {
-      $row.remove();
-      stats.emptyContentRemoved++;
-
-      // If parent table is now empty or only has empty spacer rows, remove the
-      // whole wrapper chain (td > table) up to the next table with real content
-      const remaining = $parentTable.find("> tbody > tr, > tr");
-      if (remaining.length === 0) {
-        const $wrapperTd = $parentTable.parent("td");
-        if ($wrapperTd.length) {
-          const $wrapperRow = $wrapperTd.parent("tr");
-          if ($wrapperRow.length) {
-            $wrapperRow.remove();
-            stats.emptyContentRemoved++;
-          }
-        }
-      }
-    }
-  }
-});
-
-// Strip trailing <br> from tds that have real content followed by stray breaks
-$("td").each(function () {
-  const $td = $(this);
-  const inner = $td.html();
-  if (!inner) return;
-  // Remove trailing <br> after real content (e.g., image link followed by <br>)
-  const cleaned = inner.replace(/(\s*<br\s*\/?\s*>\s*)+$/i, "");
-  if (cleaned !== inner) {
-    $td.html(cleaned);
-  }
-});
-
-// Collapse passthrough wrapper tables:
-// A table with 1 row, 1 cell, whose only child is another table,
-// and the wrapper td has no meaningful styles (no padding, background, border).
-// We merge by replacing the outer table>tbody>tr>td with just the inner table.
-// Run multiple passes since collapsing one layer may expose another.
-for (let pass = 0; pass < 5; pass++) {
-  let collapsed = 0;
-  $("table").each(function () {
-    const $table = $(this);
-    // Skip tables inside MSO conditional comments (they're special)
-    // Skip tables with classes (they're used for responsive show/hide)
-    if ($table.attr("class")) return;
-
-    const tbody = $table.find("> tbody");
-    const rowParent = tbody.length ? tbody : $table;
-    const rows = rowParent.children("tr");
-    if (rows.length !== 1) return;
-
-    const cells = rows.first().children("td");
-    if (cells.length !== 1) return;
-
-    const cell = cells.first();
-    const childTables = cell.children("table");
-    // Must have exactly 1 child table and no other meaningful content
-    if (childTables.length !== 1) return;
-    const otherContent = cell
-      .contents()
-      .filter(function () {
-        if ($(this).is("table")) return false;
-        if (this.type === "text" && !$(this).text().trim()) return false;
-        return true;
-      });
-    if (otherContent.length > 0) return;
-
-    const cellStyle = cell.attr("style") || "";
-    // Keep if the cell provides padding, background, or real borders
-    if (/padding|background|border(?!-collapse|-spacing)/i.test(cellStyle)) return;
-
-    const tableStyle = $table.attr("style") || "";
-    // Keep if the outer table provides background color
-    if (/background/i.test(tableStyle)) return;
-
-    // Safe to collapse: replace this table with its inner table child
-    const $inner = childTables.first();
-
-    // Merge any useful style properties from outer table to inner
-    // (mainly width, max-width, table-layout, margin)
-    const outerWidth = $table.attr("width");
-    if (outerWidth && !$inner.attr("width")) {
-      $inner.attr("width", outerWidth);
-    }
-
-    $table.replaceWith($inner);
-    collapsed++;
-    stats.passthroughTablesCollapsed++;
-  });
-  stats.tablesRemoved += collapsed;
-  if (collapsed === 0) break;
-}
-
-// Simplify image centering pattern:
-// table width:100% > tr > td align=center > table max-width:Xpx > tr > td > img
-// Collapse the outer centering table, move align=center to inner table's parent
+// ===== 2j. Add MSO table spacing to all tables ============================
 $("table").each(function () {
-  const $outer = $(this);
-  const tbody = $outer.find("> tbody");
-  const rowParent = tbody.length ? tbody : $outer;
-  const rows = rowParent.children("tr");
-  if (rows.length !== 1) return;
+  let style = $(this).attr("style") || "";
 
-  const cells = rows.first().children("td");
-  if (cells.length !== 1) return;
-
-  const cell = cells.first();
-  if (cell.attr("align") !== "center") return;
-
-  const innerTables = cell.children("table");
-  if (innerTables.length !== 1) return;
-
-  const $inner = innerTables.first();
-  // Check inner table has max-width and contains an image
-  const innerStyle = $inner.attr("style") || "";
-  if (!/max-width/i.test(innerStyle)) return;
-  const innerTd = $inner.find("> tbody > tr > td, > tr > td").first();
-  if (!innerTd.length) return;
-  const img = innerTd.children("img");
-  if (img.length !== 1) return;
-  // Other content in the inner td? Skip.
-  if (innerTd.children().length !== 1) return;
-
-  // Collapse: replace outer table with inner table, add margin:0 auto for centering
-  $inner.attr("align", "center");
-  if (!/margin/i.test(innerStyle)) {
-    $inner.attr("style", innerStyle + ";margin:0 auto");
-  }
-  $outer.replaceWith($inner);
-  stats.imgCenteringSimplified++;
-});
-
-// 3f. Add Outlook-safe MSO table spacing ------------------------------------
-$("table").each(function () {
-  const $table = $(this);
-  let style = $table.attr("style") || "";
   if (!/mso-table-lspace/i.test(style)) {
     stats.msoTableSpacing++;
     style += ";mso-table-lspace:0pt;mso-table-rspace:0pt";
     style = style.replace(/^;/, "");
-    $table.attr("style", style);
+  }
+
+  // Ensure border-collapse:collapse on all tables (except button tables with border-radius)
+  if (!/border-collapse/i.test(style)) {
+    style += ";border-collapse:collapse;border-spacing:0";
+    style = style.replace(/^;/, "");
+  }
+
+  $(this).attr("style", style);
+});
+
+// ===== 2k. Mirror background-color CSS to bgcolor HTML attribute ===========
+$("td, table").each(function () {
+  const style = $(this).attr("style") || "";
+  const bgMatch = style.match(/background-color\s*:\s*(#[0-9a-fA-F]{3,8})/i);
+  if (bgMatch && !$(this).attr("bgcolor")) {
+    $(this).attr("bgcolor", bgMatch[1]);
+    stats.bgcolorMirrored++;
   }
 });
 
-// 3f. Clean up link styles ---------------------------------------------------
-$("a").each(function () {
-  const $a = $(this);
-
-  // Remove ses:no-track (Amazon SES attribute — invalid XHTML namespace, not needed for D365)
-  if ($a.attr("ses:no-track") !== undefined) {
-    $a.removeAttr("ses:no-track");
-    stats.sesNoTrackRemoved++;
+// ===== 2l. Add mso-line-height-rule:exactly to text cells ==================
+$("td").each(function () {
+  let style = $(this).attr("style") || "";
+  // Only add to cells that have text styling (font-size or line-height)
+  if ((style.includes("font-size") || style.includes("line-height")) &&
+      !style.includes("mso-line-height-rule")) {
+    stats.msoLineHeightRuleAdded++;
+    style += ";mso-line-height-rule:exactly";
+    style = style.replace(/^;/, "");
+    $(this).attr("style", style);
   }
+});
 
-  let style = $a.attr("style") || "";
-  // Remove leaked JS margin properties
+// ===== 2m. Add mso-para-margin resets to all div inline styles =============
+$("div").each(function () {
+  let style = $(this).attr("style") || "";
+  if (!style.includes("mso-para-margin")) {
+    stats.msoParaMarginAdded++;
+    // Add margin:0 if not already present
+    if (!/\bmargin\s*:/i.test(style)) {
+      style = "margin:0;padding:0;" + style;
+    }
+    style += ";mso-para-margin:0;mso-margin-top-alt:0;mso-margin-bottom-alt:0";
+    style = style.replace(/^;/, "").replace(/;\s*;/g, ";");
+    $(this).attr("style", style);
+  }
+});
+
+// ===== 2n. Clean up link styles ============================================
+$("a").each(function () {
+  let style = $(this).attr("style") || "";
   style = style.replace(
-    /\b(marginLeft|marginRight|marginTop|marginBottom)\s*:\s*[^;]*;?\s*/gi,
-    ""
+    /\b(marginLeft|marginRight|marginTop|marginBottom)\s*:\s*[^;]*;?\s*/gi, ""
   );
   style = style.replace(/;\s*;/g, ";").replace(/;\s*$/, "").replace(/^\s*;/, "").trim();
   if (style) {
-    $a.attr("style", style);
+    $(this).attr("style", style);
   } else {
-    $a.removeAttr("style");
+    $(this).removeAttr("style");
+  }
+});
+
+// ===== 2o. Consolidate spacer rows into padding ============================
+// Spacer rows look like: <tr><td style="font-size:0;height:16px" height="16">&nbsp;</td></tr>
+// We try to merge them into padding on the adjacent content cell.
+$("tr").each(function () {
+  const $tr = $(this);
+  const $tds = $tr.children("td");
+  if ($tds.length !== 1) return;
+
+  const $td = $tds.first();
+  const style = $td.attr("style") || "";
+  const text = $td.text().trim();
+
+  // Detect spacer row: has height, font-size:0, and only contains &nbsp; or is empty
+  const heightMatch = style.match(/height\s*:\s*(\d+)px/i);
+  if (!heightMatch) return;
+  if (!/font-size\s*:\s*0/i.test(style)) return;
+  if (text !== "" && text !== "\u00a0" && text !== "&nbsp;") return;
+
+  const spacerHeight = parseInt(heightMatch[1], 10);
+
+  // Try to merge into the next row's first td as padding-top
+  const $nextTr = $tr.next("tr");
+  if ($nextTr.length) {
+    const $nextTd = $nextTr.children("td").first();
+    if ($nextTd.length) {
+      let nextStyle = $nextTd.attr("style") || "";
+
+      // Check if it already has padding-top
+      const ptMatch = nextStyle.match(/padding-top\s*:\s*(\d+)px/i);
+      const paddingMatch = nextStyle.match(/padding\s*:\s*(\d+)px\s+(\d+)px\s+(\d+)px\s+(\d+)px/i);
+      const paddingShortMatch = nextStyle.match(/padding\s*:\s*(\d+)px\s+(\d+)px/i);
+
+      if (ptMatch) {
+        // Add to existing padding-top
+        const newPt = parseInt(ptMatch[1], 10) + spacerHeight;
+        nextStyle = nextStyle.replace(/padding-top\s*:\s*\d+px/i, `padding-top:${newPt}px`);
+      } else if (paddingMatch) {
+        // Add to top value of 4-value padding
+        const newTop = parseInt(paddingMatch[1], 10) + spacerHeight;
+        nextStyle = nextStyle.replace(
+          /padding\s*:\s*\d+px\s+(\d+px)\s+(\d+px)\s+(\d+px)/i,
+          `padding:${newTop}px $1 $2 $3`
+        );
+      } else if (paddingShortMatch) {
+        // Convert 2-value to 4-value and add
+        const vert = parseInt(paddingShortMatch[1], 10);
+        const horiz = parseInt(paddingShortMatch[2], 10);
+        const newTop = vert + spacerHeight;
+        nextStyle = nextStyle.replace(
+          /padding\s*:\s*\d+px\s+\d+px/i,
+          `padding:${newTop}px ${horiz}px ${vert}px ${horiz}px`
+        );
+      } else {
+        // No existing padding — add padding-top
+        nextStyle = `padding-top:${spacerHeight}px;` + nextStyle;
+      }
+
+      $nextTd.attr("style", nextStyle);
+      $tr.remove();
+      stats.spacerRowsConsolidated++;
+      return;
+    }
+  }
+
+  // If can't merge forward, try to merge into previous row's last td as padding-bottom
+  const $prevTr = $tr.prev("tr");
+  if ($prevTr.length) {
+    const $prevTd = $prevTr.children("td").last();
+    if ($prevTd.length) {
+      let prevStyle = $prevTd.attr("style") || "";
+
+      const pbMatch = prevStyle.match(/padding-bottom\s*:\s*(\d+)px/i);
+      if (pbMatch) {
+        const newPb = parseInt(pbMatch[1], 10) + spacerHeight;
+        prevStyle = prevStyle.replace(/padding-bottom\s*:\s*\d+px/i, `padding-bottom:${newPb}px`);
+      } else {
+        prevStyle += `;padding-bottom:${spacerHeight}px`;
+      }
+
+      prevStyle = prevStyle.replace(/^;/, "").replace(/;\s*;/g, ";");
+      $prevTd.attr("style", prevStyle);
+      $tr.remove();
+      stats.spacerRowsConsolidated++;
+    }
+  }
+});
+
+// ===== 2p. Unwrap unnecessary <span> wrappers ==============================
+// Canva wraps text in many <span style="white-space:pre-wrap"> — after removing
+// pre-wrap, these become empty-style spans that just add bloat.
+$("span").each(function () {
+  const $span = $(this);
+  const style = $span.attr("style") || "";
+  const attrs = $span.get(0)?.attribs || {};
+
+  // If span has no remaining attributes (or only empty style), unwrap it
+  const hasStyle = style.trim().length > 0;
+  const attrKeys = Object.keys(attrs).filter(k => k !== "style");
+
+  if (!hasStyle && attrKeys.length === 0) {
+    $span.replaceWith($span.html());
+  }
+});
+
+// Remove trailing <br> inside td (Canva adds these after text blocks)
+$("td").each(function () {
+  const $td = $(this);
+  const html = $td.html();
+  if (html && html.endsWith("<br>")) {
+    $td.html(html.slice(0, -4));
   }
 });
 
 // ---------------------------------------------------------------------------
-// Phase 3g - Dynamics 365 content block markers
-//   Wraps content in D365 editor-compatible structure so sections remain
-//   editable after pasting into D365 Marketing email editor.
+// Phase 3 - Inject head content (D365 meta, MSO styles, responsive CSS)
 // ---------------------------------------------------------------------------
-{
-  // Add D365 designer meta tags to <head>
-  const d365Metas = [
-    '<meta type="xrm/designer/setting" name="type" value="marketing-designer-content-editor-document">',
-    '<meta type="xrm/designer/setting" name="layout-editable" value="marketing-designer-layout-editable">',
-    '<meta type="xrm/designer/setting" name="layout-max-width" value="600px" datatype="text" label="Layout max width">',
-  ];
-  d365Metas.forEach((meta) => {
-    $("head").append(meta);
-  });
+const $head = $("head");
 
-  // Wrap body content in D365 layout div
-  const $body = $("body");
-  const bodyContents = $body.html();
-  $body.html(
-    '<div data-layout="true" data-layout-version="v2" style="max-width:600px;margin:auto;">' +
-      bodyContents +
-      "</div>"
-  );
+// 3a. Ensure D365 designer meta tag
+if (!$('meta[type="xrm/designer/setting"]').length) {
+  $head.append('\n  <meta type="xrm/designer/setting" name="type" value="marketing-designer-content-editor-document">');
+  stats.d365MetaAdded++;
+}
 
-  // Helper: generate unique container IDs
-  let containerId = 0;
-  function nextContainerId() {
-    containerId++;
-    return "container" + Date.now().toString(36) + containerId.toString(36);
+// 3b. Ensure proper charset and viewport meta
+if (!$('meta[charset]').length && !$('meta[http-equiv="Content-Type"]').length) {
+  $head.prepend('\n  <meta charset="utf-8">');
+}
+
+// 3c. Inject MSO conditional styles — always replace any existing Canva MSO block
+// First, remove any existing <!--[if mso]> blocks from head (Canva includes its own)
+// These are rendered as text/comment nodes by cheerio, so we strip them from head HTML
+let headHtml = $head.html() || "";
+const originalHeadHtml = headHtml;
+// Remove <!--[if mso]>...<![endif]--> blocks (Canva's OfficeDocumentSettings etc.)
+headHtml = headHtml.replace(/<!--\[if\s+mso\]>[\s\S]*?<!\[endif\]-->/gi, "");
+if (headHtml !== originalHeadHtml) {
+  $head.html(headHtml);
+}
+
+const existingStyles = $head.html() || "";
+if (!existingStyles.includes("line-height: 100% !important") &&
+    !existingStyles.includes("line-height:100% !important")) {
+  const msoStyles = `
+  <!--[if mso]>
+  <noscript>
+    <xml>
+      <o:OfficeDocumentSettings>
+        <o:AllowPNG/>
+        <o:PixelsPerInch>96</o:PixelsPerInch>
+      </o:OfficeDocumentSettings>
+    </xml>
+  </noscript>
+  <style type="text/css">
+    body, table, td, th, p, div, span, a { line-height: 100% !important; }
+    table { border-collapse: collapse !important; border-spacing: 0 !important; mso-table-lspace: 0pt !important; mso-table-rspace: 0pt !important; }
+    td { border-collapse: collapse !important; }
+    div, p { margin: 0 !important; padding: 0 !important; mso-para-margin: 0 !important; mso-margin-top-alt: 0 !important; mso-margin-bottom-alt: 0 !important; mso-line-height-rule: exactly !important; }
+  </style>
+  <![endif]-->`;
+
+  // Insert after the last <meta> tag
+  const $lastMeta = $head.find("meta").last();
+  if ($lastMeta.length) {
+    $lastMeta.after(msoStyles);
+  } else {
+    $head.prepend(msoStyles);
   }
+  stats.msoHeadStylesAdded++;
+}
 
-  // Helper: detect content type for data-editorblocktype
-  function detectBlockType($el) {
-    if ($el.find("img").length && !$el.find("a.buttonClass").length) return "Image";
-    if ($el.find("a").length && $el.find("img").length === 0) return "Button";
-    return "Text";
-  }
-
-  // Identify top-level content tables (direct children of the layout div's td cells)
-  // and wrap each major row in D365 section markup.
-  // Strategy: find each top-level table in the layout div and wrap it as a section.
-  const $layout = $('div[data-layout="true"]');
-  const topTables = $layout.children("table");
-
-  topTables.each(function () {
-    const $table = $(this);
-
-    // Find content rows — rows that have visible content (not just spacers)
-    const $rows = $table.find("> tbody > tr, > tr");
-
-    $rows.each(function () {
-      const $row = $(this);
-      const $cells = $row.children("td");
-
-      $cells.each(function () {
-        const $td = $(this);
-        const text = $td.text().trim();
-        const hasImg = $td.find("img").length > 0;
-        const hasLink = $td.find("a").length > 0;
-        const isSpacerOnly =
-          !text && !hasImg && !hasLink && /^\s*(&nbsp;)?\s*$/i.test($td.html() || "");
-
-        // Skip spacer cells
-        if (isSpacerOnly) return;
-
-        // Determine block type from content
-        const blockType = detectBlockType($td);
-
-        // Wrap inner content in data-editorblocktype div if not already wrapped
-        if (!$td.find("[data-editorblocktype]").length) {
-          const inner = $td.html();
-          $td.html(
-            '<div data-editorblocktype="' + blockType + '" style="margin:0;">' +
-              inner +
-              "</div>"
-          );
-        }
-
-        // Add data-container to the td if it doesn't have one
-        if (!$td.attr("data-container")) {
-          $td.attr("data-container", "true");
-          $td.attr("id", nextContainerId());
-        }
-      });
-    });
-
-    // Wrap the table in a data-section div
-    if (!$table.parent('[data-section="true"]').length) {
-      const bgMatch = ($table.attr("style") || "").match(
-        /background-color\s*:\s*([^;]+)/i
-      );
-      const bgColor = bgMatch ? bgMatch[1].trim() : "transparent";
-      const $section = $(
-        '<div data-section="true" class="columns-equal-class wrap-section" style="margin:0;border-radius:0;background-color:' +
-          bgColor +
-          ';"></div>'
-      );
-      $table.before($section);
-      $section.append($table);
+// 3d. Inject global CSS resets if not present
+if (!existingStyles.includes("mso-table-lspace") || !existingStyles.includes("-webkit-text-size-adjust")) {
+  // Check for existing non-MSO <style> block to append to, or create new one
+  let $globalStyle = null;
+  $head.find("style").each(function () {
+    const content = $(this).html() || "";
+    // Find a style block that's NOT inside a conditional comment
+    if (content.includes("-webkit-text-size-adjust") || content.includes("mso-table-lspace")) {
+      $globalStyle = $(this);
     }
   });
 
-  stats.d365MarkersAdded = topTables.length;
+  const globalCSS = `
+  <style>
+    /* Reset */
+    body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+    table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; border-collapse: collapse; border-spacing: 0; }
+    img { -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; display: block; }
+    body { margin: 0; padding: 0; width: 100%; }
+    div { margin: 0; padding: 0; mso-para-margin: 0; mso-margin-top-alt: 0; mso-margin-bottom-alt: 0; }
+
+    /* Responsive */
+    @media only screen and (max-width: 600px) {
+      .email-wrapper { width: 100% !important; }
+      .stack-col { display: block !important; width: 100% !important; max-width: 100% !important; }
+      .stack-col-logo { display: block !important; width: 100% !important; max-width: 100% !important; text-align: center !important; }
+    }
+  </style>`;
+
+  if (!$globalStyle) {
+    $head.append(globalCSS);
+    stats.responsiveStylesAdded++;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -698,27 +665,48 @@ $("a").each(function () {
 // ---------------------------------------------------------------------------
 let output = $.html();
 
-// Replace DOCTYPE with HTML5 (cheerio may have mangled it)
-output = output.replace(/<!DOCTYPE[^>]*>/i, originalDoctype);
+// 4a. Replace DOCTYPE with HTML5
+output = output.replace(
+  /<!DOCTYPE[^>]*>/i,
+  '<!DOCTYPE html>'
+);
 
-// Remove any remaining ses:no-track attributes (invalid namespaced attr)
+// 4b. Ensure html tag has proper namespaces for Outlook VML
+output = output.replace(
+  /<html[^>]*>/i,
+  '<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">'
+);
+
+// 4c. Remove any remaining ses:no-track attributes (safety net)
 output = output.replace(/\s+ses:no-track="[^"]*"/gi, "");
+output = output.replace(/\s+ses:no-track(?=[>\s])/gi, "");
 
-// Pretty-print: add newlines after closing tags for readability
+// 4d. Remove conditional comments from body content
+// <!--[if mso]>...<![endif]--> in body
+output = output.replace(
+  /(<body[\s\S]*?)<!--\[if\s+mso\]>[\s\S]*?<!\[endif\]-->/gi,
+  (match) => {
+    // Only remove if between <body> and </body>
+    stats.conditionalCommentsRemovedFromBody++;
+    return match.replace(/<!--\[if\s+mso\]>[\s\S]*?<!\[endif\]-->/gi, "");
+  }
+);
+// <!--[if !mso]><!--> ... <!--<![endif]--> in body
+output = output.replace(/<!--\[if !mso\]><!-->([\s\S]*?)<!--<!\[endif\]-->/gi, "$1");
+
+// 4e. Remove empty MSO conditional comment shells
+output = output.replace(/<!--\[if !mso\]><!-->\s*<!--<!\[endif\]-->\s*/g, "");
+
+// 4f. Clean up double semicolons
+output = output.replace(/;\s*;/g, ";");
+
+// 4g. Pretty-print: add newlines after closing tags for readability
 output = output
   .replace(/(<\/table>)/gi, "$1\n")
   .replace(/(<\/tr>)/gi, "$1\n")
-  .replace(/(<\/td>)/gi, "$1\n")
-  .replace(/(<!--\[endif\]-->)/gi, "$1\n")
-  .replace(/(<!--<!\[endif\]-->)/gi, "$1\n");
+  .replace(/(<!--\[endif\]-->)/gi, "$1\n");
 
-// Remove empty MSO conditional comment shells left after removing style blocks
-output = output.replace(/<!--\[if !mso\]><!-->\s*<!--<!\[endif\]-->\s*/g, "");
-
-// Final cleanup: double semicolons that slipped through
-output = output.replace(/;\s*;/g, ";");
-
-// Remove excessive blank lines
+// 4h. Remove excessive blank lines
 output = output.replace(/\n{3,}/g, "\n\n");
 
 // ---------------------------------------------------------------------------
@@ -740,40 +728,82 @@ console.log(`Output: ${outputFile} (${(outputSize / 1024).toFixed(1)} KB)`);
 if (saved > 0) {
   console.log(`Saved:  ${(saved / 1024).toFixed(1)} KB (${pct}%)\n`);
 } else {
-  console.log(`Size change: +${(Math.abs(saved) / 1024).toFixed(1)} KB (MSO attributes added)\n`);
+  console.log(`Size change: +${(Math.abs(saved) / 1024).toFixed(1)} KB (MSO/D365 attributes added)\n`);
 }
-console.log("Fixes applied:");
-const labels = {
+
+console.log("--- Canva Cleanup ---");
+const canvaLabels = {
+  duplicateMobileBlocksRemoved: "duplicate mobile blocks removed (single-source responsive)",
+  conditionalCommentsRemovedFromBody: "conditional comments removed from body (D365 compat)",
+  zeroSizeImages: "zero-size images removed (mobile placeholders)",
+  preloadLinksRemoved: "link preload tags removed (useless in email)",
+  sesNoTrackRemoved: "ses:no-track removed (invalid XHTML)",
+  canvaKeywordsMetaRemoved: "Canva keywords meta removed",
+};
+
+console.log("\n--- Style Fixes ---");
+const styleLabels = {
   invalidStyleProps: "invalid JS-style properties removed",
   negativeBorders: "negative border values removed",
   redundantBorderRadius: "redundant border-radius:0 removed",
   alignNull: 'align="null" removed',
   preWrapFixed: "white-space:pre-wrap removed",
   undefinedMargins: "undefined margin values removed",
-  zeroSizeImages: "zero-size images removed",
-  missingAlt: "missing alt attributes added",
   minHeightRemoved: "min-height removed from tables",
-  preloadLinksRemoved: "link preload tags removed (useless in email)",
   multilinePaddingFixed: "multi-line padding values collapsed",
   marginInlineFixed: "margin-inline-start removed (no Outlook support)",
   doubleSemicolonsFixed: "double semicolons cleaned",
+  dataSrcRemoved: "data-src attributes removed",
+  fractionalPixelsRounded: "pixel values rounded to multiples of 4 (Outlook fix)",
+  relativeLineHeightsFixed: "relative line-heights converted to fixed px",
+};
+
+console.log("\n--- Outlook (Word Engine) Fixes ---");
+const outlookLabels = {
+  msoLineHeightRuleAdded: "mso-line-height-rule:exactly added to text cells",
   imgDisplayBlock: "display:block added to images",
   imgBorderFixed: "border:0 added to linked images",
-  msoTableSpacing: "MSO table spacing added (Outlook fix)",
-  dataSrcRemoved: "data-src attributes removed",
-  passthroughTablesCollapsed: "passthrough wrapper tables collapsed",
-  emptyRowsRemoved: "empty rows removed",
-  emptyContentRemoved: "empty content wrappers removed (<br> only)",
-  imgCenteringSimplified: "image centering tables simplified",
-  tablesRemoved: "total tables eliminated",
-  mobileDupesRemoved: "mobile duplicate blocks removed",
-  responsiveCssMerged: "responsive CSS consolidated",
-  sesNoTrackRemoved: "ses:no-track removed (invalid XHTML namespace)",
-  d365MarkersAdded: "D365 content block sections created",
+  msoTableSpacing: "MSO table spacing added",
+  bgcolorMirrored: "bgcolor attribute mirrored from CSS background-color",
+  msoParaMarginAdded: "mso-para-margin reset added to divs",
+  spacerRowsConsolidated: "spacer rows consolidated into padding",
 };
-Object.entries(stats).forEach(([key, count]) => {
-  if (count > 0) {
-    console.log(`  [${String(count).padStart(3)}] ${labels[key] || key}`);
+
+console.log("\n--- D365 Compatibility ---");
+const d365Labels = {
+  d365MetaAdded: "D365 designer meta tag added",
+  d365ContainerWrapped: "content areas wrapped with data-container",
+  msoHeadStylesAdded: "MSO conditional styles injected in head",
+  responsiveStylesAdded: "responsive CSS styles injected",
+};
+
+const allLabels = { ...canvaLabels, ...styleLabels, ...outlookLabels, ...d365Labels };
+
+// Print grouped
+const groups = [
+  { title: "Canva Cleanup", keys: Object.keys(canvaLabels) },
+  { title: "Style Fixes", keys: Object.keys(styleLabels) },
+  { title: "Outlook (Word Engine) Fixes", keys: Object.keys(outlookLabels) },
+  { title: "D365 Compatibility", keys: Object.keys(d365Labels) },
+];
+
+groups.forEach(({ title, keys }) => {
+  console.log(`\n  ${title}:`);
+  let groupHits = 0;
+  keys.forEach((key) => {
+    if (stats[key] > 0) {
+      console.log(`    [${String(stats[key]).padStart(3)}] ${allLabels[key]}`);
+      groupHits++;
+    }
+  });
+  if (groupHits === 0) {
+    console.log("    (none needed)");
   }
 });
+
 console.log("\nDone.");
+console.log("\nNOTE: For best results, manually verify:");
+console.log("  - Content sections are wrapped in data-container + data-editorblocktype divs");
+console.log("  - Buttons use data-editorblocktype=\"Text\" (NEVER \"Button\")");
+console.log("  - Outer table has minimal rows (consolidate sections where possible)");
+console.log("  - Test in D365 designer, then send test to Outlook Desktop");

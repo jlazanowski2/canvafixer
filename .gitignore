@@ -2,6 +2,7 @@ node_modules/
 dist/
 *.optimized.html
 *.optimized.txt
+local.settings.json
 
 # Sample email files (may contain real marketing content)
 email.txt

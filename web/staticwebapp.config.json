@@ -1,5 +1,22 @@
 {
   "navigationFallback": {
     "rewrite": "/index.html"
+  },
+  "routes": [
+    {
+      "route": "/api/login",
+      "methods": ["POST"],
+      "allowedRoles": ["anonymous"]
+    },
+    {
+      "route": "/api/restructure",
+      "methods": ["POST"],
+      "allowedRoles": ["anonymous"]
+    }
+  ],
+  "globalHeaders": {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin"
   }
 }
