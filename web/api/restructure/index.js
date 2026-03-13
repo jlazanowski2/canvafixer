@@ -37,7 +37,7 @@ function validateToken(token) {
     const hmac = token.substring(dotIndex + 1);
     const expiry = parseInt(payload, 10);
 
-    if (isNaN(expiry)) return { valid: false, reason: "invalid expiry" };
+    if (isNaN(expiry)) return { valid: false, reason: `invalid expiry — payload: "${payload}", token starts: "${token.substring(0, 30)}"` };
     if (Math.floor(Date.now() / 1000) > expiry) return { valid: false, reason: "token expired" };
 
     const expected = crypto
