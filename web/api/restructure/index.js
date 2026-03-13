@@ -25,25 +25,34 @@ function checkRateLimit(ip) {
 }
 
 function validateToken(token) {
-  const appPassword = process.env.APP_PASSWORD;
-  if (!appPassword || !token) return false;
+  try {
+    const appPassword = process.env.APP_PASSWORD;
+    if (!appPassword || !token) return false;
 
-  const parts = token.split(".");
-  if (parts.length !== 2) return false;
+    const parts = token.split(".");
+    if (parts.length !== 2) return false;
 
-  const [payload, hmac] = parts;
-  const expiry = parseInt(payload, 10);
+    const [payload, hmac] = parts;
+    const expiry = parseInt(payload, 10);
 
-  // Check expiry
-  if (isNaN(expiry) || Math.floor(Date.now() / 1000) > expiry) return false;
+    // Check expiry
+    if (isNaN(expiry) || Math.floor(Date.now() / 1000) > expiry) return false;
 
-  // Verify HMAC
-  const expected = crypto
-    .createHmac("sha256", appPassword)
-    .update(payload)
-    .digest("hex");
+    // Verify HMAC
+    const expected = crypto
+      .createHmac("sha256", appPassword)
+      .update(payload)
+      .digest("hex");
 
-  return crypto.timingSafeEqual(Buffer.from(hmac, "hex"), Buffer.from(expected, "hex"));
+    const hmacBuf = Buffer.from(hmac, "hex");
+    const expectedBuf = Buffer.from(expected, "hex");
+
+    if (hmacBuf.length !== expectedBuf.length) return false;
+
+    return crypto.timingSafeEqual(hmacBuf, expectedBuf);
+  } catch {
+    return false;
+  }
 }
 
 /**

@@ -143,8 +143,6 @@ export default function App() {
         body: JSON.stringify({ html: output }),
       });
 
-      const data = await res.json();
-
       if (res.status === 401) {
         clearToken();
         setAuthed(false);
@@ -152,8 +150,16 @@ export default function App() {
         return;
       }
 
+      let data;
+      try {
+        data = await res.json();
+      } catch {
+        setError(`API error (${res.status}) — response was not JSON. The function may have crashed.`);
+        return;
+      }
+
       if (!res.ok) {
-        setError(data.error || "AI restructure failed");
+        setError(data.error || `AI restructure failed (${res.status})`);
         return;
       }
 
