@@ -66,8 +66,7 @@ function validateToken(token) {
  */
 module.exports = async function (context, req) {
   // Auth check
-  const authHeader = req.headers?.authorization || req.headers?.Authorization || "";
-  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+  const token = (req.headers?.["x-canvafixer-token"] || "").trim();
 
   const tokenResult = validateToken(token);
   if (!tokenResult.valid) {

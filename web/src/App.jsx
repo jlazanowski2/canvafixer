@@ -138,7 +138,7 @@ export default function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${getToken()}`,
+          "X-CanvaFixer-Token": getToken(),
         },
         body: JSON.stringify({ html: output }),
       });
