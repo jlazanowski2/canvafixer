@@ -6,7 +6,9 @@
  *   LLM_PROVIDER: "anthropic" | "openai"
  *   LLM_MODEL: model ID (e.g., "claude-sonnet-4-6", "gpt-4o")
  *   ANTHROPIC_API_KEY: API key for Anthropic
- *   ANTHROPIC_BASE_URL: (optional) custom base URL (e.g., Azure AI Foundry)
+ *   ANTHROPIC_BASE_URL: (optional) custom base URL — omit the trailing /v1, the SDK appends it.
+ *     Azure AI Foundry example: https://your-resource.services.ai.azure.com/anthropic
+ *     (NOT .../anthropic/v1 — that causes a double /v1/v1/messages path)
  *   OPENAI_API_KEY: API key for OpenAI-compatible
  *   OPENAI_BASE_URL: (optional) custom base URL for OpenAI-compatible APIs
  */
