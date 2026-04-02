@@ -1,6 +1,48 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { optimize, statLabels } from "./optimizer.js";
 import "./app.css";
+
+const funMode = new URLSearchParams(window.location.search).has("fun");
+
+const funEmojis = [
+  "🦆","🦖","🦕","🐣","🎆","🎇","✨","🔥","💥","🎉",
+  "🎊","🚀","⭐","🌮","🦄","🐸","🍕","👾","🤖","🏄",
+];
+
+function FunLayer() {
+  const particles = useMemo(() =>
+    Array.from({ length: 25 }, (_, i) => ({
+      emoji: funEmojis[i % funEmojis.length],
+      left: Math.random() * 90 + 5,
+      delay: Math.random() * 12,
+      duration: 8 + Math.random() * 10,
+      size: 18 + Math.random() * 20,
+      wobble: (Math.random() - 0.5) * 60,
+    })), []);
+
+  return (
+    <div className="fun-layer" aria-hidden="true">
+      {particles.map((p, i) => (
+        <span
+          key={i}
+          className="fun-particle"
+          style={{
+            left: `${p.left}%`,
+            animationDelay: `${p.delay}s`,
+            animationDuration: `${p.duration}s`,
+            fontSize: `${p.size}px`,
+            "--wobble": `${p.wobble}px`,
+          }}
+        >
+          {p.emoji}
+        </span>
+      ))}
+      <span className="fun-runner fun-dino">🦖</span>
+      <span className="fun-runner fun-duck">🦆</span>
+      <span className="fun-runner fun-duck2">🦆</span>
+    </div>
+  );
+}
 
 const loadingPhrases = [
   // Self-aware
@@ -402,7 +444,8 @@ export default function App() {
             />
             {aiLoading && (
               <div className="loading-overlay">
-                <div className="loading-content">
+                {funMode && <FunLayer />}
+                <div className="loading-card">
                   <div className="loading-steps">
                     <span className="loading-step loading-step--done">Pass 1 ✓</span>
                     <span className="loading-step-sep">&rarr;</span>
