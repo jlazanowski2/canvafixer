@@ -1,6 +1,35 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { optimize, statLabels } from "./optimizer.js";
 import "./app.css";
+
+const loadingPhrases = [
+  "Firing up the AI...",
+  "Analyzing your HTML structure...",
+  "Counting nested tables... oh my...",
+  "Mapping out the damage...",
+  "Wrangling rogue table cells...",
+  "Teaching Outlook what padding means...",
+  "Performing open-heart surgery on your markup...",
+  "Negotiating peace between Outlook and Gmail...",
+  "Applying the sacred MSO incantations...",
+  "Sacrificing spacer rows to the Outlook gods...",
+  "Convincing <div>s to behave...",
+  "Deleting things that should never have existed...",
+  "Adding bgcolor for the 47th time...",
+  "Folding spacetime to reduce table rows...",
+  "Whispering sweet nothings to the D365 editor...",
+  "Making Outlook's Word engine slightly less angry...",
+  "Restructuring the restructured restructure...",
+  "Calculating dimensions divisible by 4...",
+  "Gently persuading your HTML to be responsive...",
+  "Almost there... the AI is doing its thing...",
+  "Still going... this is a big one...",
+  "The AI is really thinking about this one...",
+  "Good things come to those who wait...",
+  "Your email is in good hands. Probably.",
+  "Still cooking...",
+  "Any moment now...",
+];
 
 function formatKB(bytes) {
   return (bytes / 1024).toFixed(1) + " KB";
@@ -89,6 +118,39 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiResult, setAiResult] = useState(null);
+  const [loadingPhrase, setLoadingPhrase] = useState("");
+  const [elapsed, setElapsed] = useState(0);
+  const elapsedRef = useRef(null);
+
+  const phraseIndexRef = useRef(0);
+  const phraseTimerRef = useRef(null);
+
+  // Elapsed timer + phrase rotation during AI loading
+  useEffect(() => {
+    if (aiLoading) {
+      setElapsed(0);
+      phraseIndexRef.current = 0;
+      setLoadingPhrase(loadingPhrases[0]);
+      elapsedRef.current = setInterval(() => setElapsed((s) => s + 1), 1000);
+
+      function scheduleNextPhrase() {
+        const delay = 15000 + Math.random() * 15000; // 15–30 seconds
+        phraseTimerRef.current = setTimeout(() => {
+          phraseIndexRef.current = Math.min(phraseIndexRef.current + 1, loadingPhrases.length - 1);
+          setLoadingPhrase(loadingPhrases[phraseIndexRef.current]);
+          scheduleNextPhrase();
+        }, delay);
+      }
+      scheduleNextPhrase();
+    } else {
+      clearInterval(elapsedRef.current);
+      clearTimeout(phraseTimerRef.current);
+    }
+    return () => {
+      clearInterval(elapsedRef.current);
+      clearTimeout(phraseTimerRef.current);
+    };
+  }, [aiLoading]);
 
   const handleDragOver = useCallback((e) => {
     e.preventDefault();
@@ -110,38 +172,39 @@ export default function App() {
     return <LoginScreen onLogin={() => setAuthed(true)} />;
   }
 
-  function handleOptimize() {
+  async function handleOptimize() {
     setError("");
     setCopied(false);
     setAiResult(null);
     if (!input.trim()) {
-      setError("Paste your Canva HTML into the input box first.");
+      setError("Paste your email HTML into the input box first.");
       return;
     }
+
+    // --- Pass 1: mechanical optimization (instant, runs in browser) ---
+    let pass1Html;
     try {
       const res = optimize(input);
+      pass1Html = res.html;
       setOutput(res.html);
       setResult(res);
     } catch (e) {
       setError("Optimization failed: " + e.message);
+      return;
     }
-  }
 
-  async function handleAiRestructure() {
-    if (!output) return;
-    setError("");
+    // --- Pass 2: AI restructure (async, poll for result) ---
     setAiLoading(true);
-    setAiResult(null);
+    setLoadingPhrase(loadingPhrases[0]);
 
     try {
-      // Start the job — returns immediately with a job ID
       const startRes = await fetch("/api/restructure", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "X-CanvaFixer-Token": getToken(),
         },
-        body: JSON.stringify({ html: output }),
+        body: JSON.stringify({ html: pass1Html }),
       });
 
       let startData;
@@ -169,9 +232,8 @@ export default function App() {
 
       const { jobId } = startData;
 
-      // Poll for result every 3 seconds
       const POLL_INTERVAL = 3000;
-      const MAX_POLLS = 80; // 4 minutes max
+      const MAX_POLLS = 80;
 
       for (let i = 0; i < MAX_POLLS; i++) {
         await new Promise((r) => setTimeout(r, POLL_INTERVAL));
@@ -211,7 +273,6 @@ export default function App() {
           return;
         }
 
-        // Unexpected — job disappeared or unknown status
         setError(pollData.error || `Unexpected status: ${pollData.status}`);
         return;
       }
@@ -259,7 +320,7 @@ export default function App() {
             Canva<span>Fixer</span>
           </div>
           <span className="tagline">
-            Optimize Canva HTML for Outlook, Gmail, iOS Mail + D365
+            Optimize email HTML for Outlook, Gmail, iOS Mail + D365
           </span>
         </div>
         <button className="btn btn--ghost btn--sm" onClick={handleLogout}>
@@ -284,7 +345,7 @@ export default function App() {
           </div>
           <textarea
             className="editor"
-            placeholder="Paste Canva HTML here or drag an .html file..."
+            placeholder="Paste email HTML here or drag an .html file..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
           />
@@ -313,8 +374,8 @@ export default function App() {
               <div className="loading-overlay">
                 <div className="loading-content">
                   <span className="spinner spinner--lg" />
-                  <span className="loading-text">AI is restructuring your email…</span>
-                  <span className="loading-sub">This usually takes 1–2 minutes</span>
+                  <span className="loading-phrase" key={loadingPhrase}>{loadingPhrase}</span>
+                  <span className="loading-elapsed">{elapsed}s</span>
                 </div>
               </div>
             )}
@@ -326,32 +387,25 @@ export default function App() {
         <button
           className="btn btn--primary"
           onClick={handleOptimize}
-          disabled={!input.trim()}
-        >
-          Pass 1: Optimize
-        </button>
-        <button
-          className="btn btn--ai"
-          onClick={handleAiRestructure}
-          disabled={!output || aiLoading}
+          disabled={!input.trim() || aiLoading}
         >
           {aiLoading ? (
             <>
               <span className="spinner" />
-              Restructuring…
+              Optimizing…
             </>
           ) : (
-            "Pass 2: AI Restructure"
+            "Optimize"
           )}
         </button>
         <button
           className="btn btn--copy"
           onClick={handleCopy}
-          disabled={!output}
+          disabled={!output || aiLoading}
         >
           {copied ? "Copied" : "Copy Output"}
         </button>
-        <button className="btn btn--ghost" onClick={handleClear}>
+        <button className="btn btn--ghost" onClick={handleClear} disabled={aiLoading}>
           Clear
         </button>
         {copied && (
