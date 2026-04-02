@@ -1,5 +1,7 @@
 const crypto = require("crypto");
 const { restructure } = require("../lib/llm");
+const { validateToken } = require("../lib/auth");
+const { jobs } = require("../lib/jobs");
 
 // Simple in-memory rate limiter: max 10 requests per IP per hour
 const rateLimitMap = new Map();
@@ -24,45 +26,13 @@ function checkRateLimit(ip) {
   return true;
 }
 
-function validateToken(token) {
-  try {
-    const appPassword = process.env.APP_PASSWORD;
-    if (!appPassword) return { valid: false, reason: "APP_PASSWORD not configured" };
-    if (!token) return { valid: false, reason: "no token provided" };
-
-    const dotIndex = token.indexOf(".");
-    if (dotIndex === -1) return { valid: false, reason: "bad token format" };
-
-    const payload = token.substring(0, dotIndex);
-    const hmac = token.substring(dotIndex + 1);
-    const expiry = parseInt(payload, 10);
-
-    if (isNaN(expiry)) return { valid: false, reason: `invalid expiry — payload: "${payload}", token starts: "${token.substring(0, 30)}"` };
-    if (Math.floor(Date.now() / 1000) > expiry) return { valid: false, reason: "token expired" };
-
-    const expected = crypto
-      .createHmac("sha256", appPassword)
-      .update(payload)
-      .digest("hex");
-
-    const hmacBuf = Buffer.from(hmac, "hex");
-    const expectedBuf = Buffer.from(expected, "hex");
-
-    if (hmacBuf.length !== expectedBuf.length) return { valid: false, reason: "HMAC length mismatch" };
-
-    if (!crypto.timingSafeEqual(hmacBuf, expectedBuf)) return { valid: false, reason: "HMAC mismatch" };
-
-    return { valid: true };
-  } catch (e) {
-    return { valid: false, reason: `validation error: ${e.message}` };
-  }
-}
-
 /**
  * POST /api/restructure
- * Headers: Authorization: Bearer <token>
+ * Headers: X-CanvaFixer-Token: <token>
  * Body: { "html": "..." }
- * Returns: { "html": "...", "usage": { inputTokens, outputTokens } }
+ * Returns: 202 with { "jobId": "...", "status": "processing" }
+ *
+ * The LLM call runs in the background. Poll /api/restructure-status?id=<jobId> for the result.
  */
 module.exports = async function (context, req) {
   // Auth check
@@ -79,8 +49,8 @@ module.exports = async function (context, req) {
   }
 
   // Rate limit
-  const clientIp = req.headers?.["x-forwarded-for"]?.split(",")[0]?.trim()
-    || req.headers?.["client-ip"]
+  const clientIp = req.headers?.["client-ip"]
+    || req.headers?.["x-forwarded-for"]?.split(",")[0]?.trim()
     || "unknown";
 
   if (!checkRateLimit(clientIp)) {
@@ -113,24 +83,38 @@ module.exports = async function (context, req) {
     return;
   }
 
-  // Call LLM
-  try {
-    const result = await restructure(html);
+  // Generate job ID and start background processing
+  const jobId = crypto.randomUUID();
 
-    context.res = {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-      body: {
+  jobs.set(jobId, {
+    status: "processing",
+    createdAt: Date.now(),
+  });
+
+  // Fire-and-forget — the LLM call continues after this function returns.
+  // The Node.js process stays alive for subsequent poll requests.
+  const createdAt = Date.now();
+  restructure(html)
+    .then((result) => {
+      jobs.set(jobId, {
+        status: "complete",
         html: result.html,
         usage: result.usage,
-      },
-    };
-  } catch (err) {
-    context.log.error("LLM restructure failed:", err.message);
-    context.res = {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-      body: { error: "AI restructure failed: " + err.message },
-    };
-  }
+        createdAt,
+      });
+    })
+    .catch((err) => {
+      jobs.set(jobId, {
+        status: "error",
+        error: "AI restructure failed: " + err.message,
+        createdAt,
+      });
+    });
+
+  // Return immediately with job ID
+  context.res = {
+    status: 202,
+    headers: { "Content-Type": "application/json" },
+    body: { jobId, status: "processing" },
+  };
 };

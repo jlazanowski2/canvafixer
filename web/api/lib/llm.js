@@ -17,7 +17,7 @@ const { SYSTEM_PROMPT, USER_PROMPT_TEMPLATE } = require("./rules");
 
 async function callAnthropic(html, model) {
   const Anthropic = require("@anthropic-ai/sdk");
-  const config = { apiKey: process.env.ANTHROPIC_API_KEY };
+  const config = { apiKey: process.env.ANTHROPIC_API_KEY, timeout: 210000 }; // 3.5 min
   if (process.env.ANTHROPIC_BASE_URL) {
     config.baseURL = process.env.ANTHROPIC_BASE_URL;
   }
@@ -49,7 +49,7 @@ async function callAnthropic(html, model) {
 
 async function callOpenAI(html, model) {
   const OpenAI = require("openai");
-  const config = { apiKey: process.env.OPENAI_API_KEY };
+  const config = { apiKey: process.env.OPENAI_API_KEY, timeout: 210000 }; // 3.5 min
   if (process.env.OPENAI_BASE_URL) {
     config.baseURL = process.env.OPENAI_BASE_URL;
   }

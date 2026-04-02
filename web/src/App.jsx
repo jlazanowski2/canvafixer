@@ -134,7 +134,8 @@ export default function App() {
     setAiResult(null);
 
     try {
-      const res = await fetch("/api/restructure", {
+      // Start the job — returns immediately with a job ID
+      const startRes = await fetch("/api/restructure", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -143,17 +144,16 @@ export default function App() {
         body: JSON.stringify({ html: output }),
       });
 
-      let data;
+      let startData;
       try {
-        data = await res.json();
+        startData = await startRes.json();
       } catch {
-        setError(`API error (${res.status}) — response was not JSON. The function may have crashed.`);
+        setError(`API error (${startRes.status}) — response was not JSON.`);
         return;
       }
 
-      if (res.status === 401) {
-        const reason = data.error || "Session expired";
-        // Only kick to login if actually expired, not for config issues
+      if (startRes.status === 401) {
+        const reason = startData.error || "Session expired";
         if (reason.includes("expired") || reason.includes("no token")) {
           clearToken();
           setAuthed(false);
@@ -162,13 +162,61 @@ export default function App() {
         return;
       }
 
-      if (!res.ok) {
-        setError(data.error || `AI restructure failed (${res.status})`);
+      if (startRes.status !== 202) {
+        setError(startData.error || `Failed to start restructure (${startRes.status})`);
         return;
       }
 
-      setOutput(data.html);
-      setAiResult(data.usage);
+      const { jobId } = startData;
+
+      // Poll for result every 3 seconds
+      const POLL_INTERVAL = 3000;
+      const MAX_POLLS = 80; // 4 minutes max
+
+      for (let i = 0; i < MAX_POLLS; i++) {
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+
+        const pollRes = await fetch(`/api/restructure-status?id=${jobId}`, {
+          headers: { "X-CanvaFixer-Token": getToken() },
+        });
+
+        let pollData;
+        try {
+          pollData = await pollRes.json();
+        } catch {
+          setError(`Poll error (${pollRes.status}) — response was not JSON.`);
+          return;
+        }
+
+        if (pollRes.status === 401) {
+          const reason = pollData.error || "Session expired";
+          if (reason.includes("expired") || reason.includes("no token")) {
+            clearToken();
+            setAuthed(false);
+          }
+          setError(reason);
+          return;
+        }
+
+        if (pollData.status === "processing") continue;
+
+        if (pollData.status === "error") {
+          setError(pollData.error || "AI restructure failed");
+          return;
+        }
+
+        if (pollData.status === "complete") {
+          setOutput(pollData.html);
+          setAiResult(pollData.usage);
+          return;
+        }
+
+        // Unexpected — job disappeared or unknown status
+        setError(pollData.error || `Unexpected status: ${pollData.status}`);
+        return;
+      }
+
+      setError("AI restructure timed out — the request took too long.");
     } catch (e) {
       setError("AI restructure failed: " + e.message);
     } finally {
@@ -266,7 +314,7 @@ export default function App() {
                 <div className="loading-content">
                   <span className="spinner spinner--lg" />
                   <span className="loading-text">AI is restructuring your email…</span>
-                  <span className="loading-sub">This usually takes 15–30 seconds</span>
+                  <span className="loading-sub">This usually takes 1–2 minutes</span>
                 </div>
               </div>
             )}

@@ -12,6 +12,11 @@
       "route": "/api/restructure",
       "methods": ["POST"],
       "allowedRoles": ["anonymous"]
+    },
+    {
+      "route": "/api/restructure-status",
+      "methods": ["GET"],
+      "allowedRoles": ["anonymous"]
     }
   ],
   "globalHeaders": {
