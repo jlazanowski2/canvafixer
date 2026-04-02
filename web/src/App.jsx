@@ -3,32 +3,50 @@ import { optimize, statLabels } from "./optimizer.js";
 import "./app.css";
 
 const loadingPhrases = [
-  "Firing up the AI...",
-  "Analyzing your HTML structure...",
-  "Counting nested tables... oh my...",
-  "Mapping out the damage...",
-  "Wrangling rogue table cells...",
-  "Teaching Outlook what padding means...",
-  "Performing open-heart surgery on your markup...",
-  "Negotiating peace between Outlook and Gmail...",
-  "Applying the sacred MSO incantations...",
-  "Sacrificing spacer rows to the Outlook gods...",
-  "Convincing <div>s to behave...",
-  "Deleting things that should never have existed...",
-  "Adding bgcolor for the 47th time...",
-  "Folding spacetime to reduce table rows...",
-  "Whispering sweet nothings to the D365 editor...",
-  "Making Outlook's Word engine slightly less angry...",
-  "Restructuring the restructured restructure...",
-  "Calculating dimensions divisible by 4...",
-  "Gently persuading your HTML to be responsive...",
-  "Almost there... the AI is doing its thing...",
-  "Still going... this is a big one...",
-  "The AI is really thinking about this one...",
-  "Good things come to those who wait...",
-  "Your email is in good hands. Probably.",
-  "Still cooking...",
-  "Any moment now...",
+  // Self-aware
+  "If you're reading this, the AI hasn't crashed. Good sign.",
+  "Plot twist: there were tables inside the tables.",
+  "Your HTML called. It's in therapy now.",
+  "The AI just sighed. That can't be good.",
+  "Somewhere, a developer just cried looking at this markup.",
+  "This would take a human 2 hours. We're doing it in 2 minutes.",
+  // Outlook shade
+  "Arguing with Outlook. Outlook is losing. Slowly.",
+  "Explaining to Microsoft Word that it's not a web browser.",
+  "Outlook: 'You want ROUND corners?' *laughs in Word engine*",
+  "Outlook just asked why we're using CSS. Cute.",
+  "Gently reminding Outlook that it's 2026.",
+  // Technical but funny
+  "Found another nested table. And another. And another...",
+  "Converting prayers to inline styles...",
+  "Adding bgcolor because Outlook doesn't believe in CSS.",
+  "Making every number divisible by 4. It's a whole thing.",
+  "mso-line-height-rule: exactly. Not approximately. EXACTLY.",
+  "Removing spacer rows like pulling weeds after a rainstorm.",
+  "Counting <td>s the way other people count sheep.",
+  // Dramatic
+  "The battle between your email and Outlook rages on...",
+  "In the grim darkness of email HTML, there is only tables.",
+  "One does not simply render an email in Outlook.",
+  "What is dead may never die — but this spacer row can.",
+  // Absurd
+  "Feeding your HTML to the AI. It seems... concerned.",
+  "Hiring tiny CSS elves to hand-deliver styles to each element.",
+  "Asking the D365 editor nicely not to break everything. Again.",
+  "Performing ancient email rituals handed down by the ancestors.",
+  "Consulting the scrolls of mso-table-lspace...",
+  "Three <table>s for the Elven-kings under the sky...",
+  // Casual
+  "Hang tight, this is the fun part.",
+  "Still cooking. Low and slow, like good brisket.",
+  "The AI is in the zone. Best not to disturb it.",
+  "Making your email look good in things that don't want it to.",
+  "You could make a cup of coffee. Just saying.",
+  "Fun fact: email HTML is older than most interns.",
+  "brb, teaching a 1998 rendering engine modern tricks.",
+  "If email HTML were easy, you wouldn't need this app.",
+  "Patience, young padawan. The CSS is strong with this one.",
+  "Trust the process. The very, very slow process.",
 ];
 
 function formatKB(bytes) {
@@ -122,22 +140,34 @@ export default function App() {
   const [elapsed, setElapsed] = useState(0);
   const elapsedRef = useRef(null);
 
-  const phraseIndexRef = useRef(0);
   const phraseTimerRef = useRef(null);
+  const usedPhrasesRef = useRef(new Set());
+
+  function pickRandomPhrase() {
+    // Reset pool if exhausted
+    if (usedPhrasesRef.current.size >= loadingPhrases.length) {
+      usedPhrasesRef.current.clear();
+    }
+    let idx;
+    do {
+      idx = Math.floor(Math.random() * loadingPhrases.length);
+    } while (usedPhrasesRef.current.has(idx));
+    usedPhrasesRef.current.add(idx);
+    return loadingPhrases[idx];
+  }
 
   // Elapsed timer + phrase rotation during AI loading
   useEffect(() => {
     if (aiLoading) {
       setElapsed(0);
-      phraseIndexRef.current = 0;
-      setLoadingPhrase(loadingPhrases[0]);
+      usedPhrasesRef.current.clear();
+      setLoadingPhrase(pickRandomPhrase());
       elapsedRef.current = setInterval(() => setElapsed((s) => s + 1), 1000);
 
       function scheduleNextPhrase() {
-        const delay = 15000 + Math.random() * 15000; // 15–30 seconds
+        const delay = 10000 + Math.random() * 5000; // 10–15 seconds
         phraseTimerRef.current = setTimeout(() => {
-          phraseIndexRef.current = Math.min(phraseIndexRef.current + 1, loadingPhrases.length - 1);
-          setLoadingPhrase(loadingPhrases[phraseIndexRef.current]);
+          setLoadingPhrase(pickRandomPhrase());
           scheduleNextPhrase();
         }, delay);
       }
@@ -373,9 +403,16 @@ export default function App() {
             {aiLoading && (
               <div className="loading-overlay">
                 <div className="loading-content">
-                  <span className="spinner spinner--lg" />
+                  <div className="loading-steps">
+                    <span className="loading-step loading-step--done">Pass 1 ✓</span>
+                    <span className="loading-step-sep">&rarr;</span>
+                    <span className="loading-step loading-step--active">Pass 2: AI Restructure</span>
+                  </div>
+                  <div className="thinking-dots">
+                    <span /><span /><span />
+                  </div>
                   <span className="loading-phrase" key={loadingPhrase}>{loadingPhrase}</span>
-                  <span className="loading-elapsed">{elapsed}s</span>
+                  <span className="loading-elapsed"><span className="pulse-dot" />{elapsed}s</span>
                 </div>
               </div>
             )}
