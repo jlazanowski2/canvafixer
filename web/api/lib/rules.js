@@ -29,6 +29,12 @@ The input HTML has already had mechanical fixes applied (pixel rounding, MSO att
    - Use "Image" for sections containing an <img> tag.
    - Use "Text" for everything else including buttons.
    - NEVER use "Button" — D365 replaces all inner HTML with its own widget.
+   - **CRITICAL**: data-editorblocktype divs must ALWAYS have margin:0; padding:0.
+     If the input has margin (e.g., style="margin: 10px;") on these divs, convert
+     that margin value to padding on the inner <td>. Outlook ignores div margins,
+     so any spacing must come from table cell padding. Every data-editorblocktype
+     div's content MUST be inside a <table><tr><td> — never bare <p>, <ul>, or
+     other elements directly inside the div.
 
 3. **Rebuild buttons using the proven pattern**
    - Canva buttons have <a> wrapping a <table>. Replace with:

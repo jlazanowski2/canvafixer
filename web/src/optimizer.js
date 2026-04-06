@@ -451,6 +451,7 @@ export function optimize(raw) {
   <style>
     body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
     table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; border-collapse: collapse; border-spacing: 0; }
+    td { word-wrap: break-word; word-break: break-word; overflow-wrap: break-word; }
     img { -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; display: block; }
     body { margin: 0; padding: 0; width: 100%; }
     div { margin: 0; padding: 0; mso-para-margin: 0; mso-margin-top-alt: 0; mso-margin-bottom-alt: 0; }
@@ -486,6 +487,53 @@ export function optimize(raw) {
   const outputSize = new Blob([output]).size;
 
   return { html: output, stats, inputSize, outputSize };
+}
+
+/**
+ * Post-process LLM (Pass 2) output.
+ * Converts margin on data-editorblocktype divs to table-based padding,
+ * ensuring consistent rendering in Outlook (Word engine) and narrow
+ * preview panes where div margins are ignored.
+ */
+export function postProcess(rawHtml) {
+  const $ = cheerio.load(rawHtml, { xml: false, decodeEntities: false });
+
+  $("[data-editorblocktype]").each(function () {
+    const $div = $(this);
+    let style = $div.attr("style") || "";
+
+    // Extract margin value
+    const marginMatch = style.match(/\bmargin\s*:\s*([^;]+)/i);
+    if (!marginMatch) return;
+
+    const marginVal = marginMatch[1].trim();
+    // Skip if margin is already 0
+    if (/^0(px)?\s*(0(px)?\s*)*$/.test(marginVal)) return;
+
+    // Skip if content is already a single table (already properly wrapped)
+    const children = $div.children();
+    if (children.length === 1 && children.first().is("table")) return;
+
+    // Wrap content in a table with the margin value as padding
+    const content = $div.html();
+    $div.html(
+      `<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse; border-spacing:0; mso-table-lspace:0pt; mso-table-rspace:0pt;"><tbody><tr><td style="padding:${marginVal};">${content}</td></tr></tbody></table>`
+    );
+
+    // Reset div margin and ensure MSO properties
+    style = style.replace(/\bmargin\s*:\s*[^;]+;?\s*/i, "");
+    style = style.replace(/\bpadding\s*:\s*[^;]+;?\s*/i, "");
+    style = "margin:0;padding:0;" + style;
+    if (!style.includes("mso-para-margin")) {
+      style += ";mso-para-margin:0;mso-margin-top-alt:0;mso-margin-bottom-alt:0";
+    }
+    style = style.replace(/^;/, "").replace(/;\s*;/g, ";").replace(/;\s*$/, "");
+    $div.attr("style", style);
+  });
+
+  let output = $.html();
+  output = output.replace(/;\s*;/g, ";");
+  return output;
 }
 
 export const statLabels = {

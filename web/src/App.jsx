@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
-import { optimize, statLabels } from "./optimizer.js";
+import { optimize, postProcess, statLabels } from "./optimizer.js";
 import "./app.css";
 
 const funMode = new URLSearchParams(window.location.search).has("fun");
@@ -340,7 +340,7 @@ export default function App() {
         }
 
         if (pollData.status === "complete") {
-          setOutput(pollData.html);
+          setOutput(postProcess(pollData.html));
           setAiResult(pollData.usage);
           return;
         }

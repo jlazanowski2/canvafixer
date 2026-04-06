@@ -425,7 +425,43 @@ $("td").each(function () {
   }
 });
 
-// ===== 2m. Add mso-para-margin resets to all div inline styles =============
+// ===== 2m. Convert editorblock div margins to table-based padding ==========
+// D365 editor adds margin:10px (etc.) to data-editorblocktype divs.
+// Outlook's Word engine ignores div margins, causing layout inconsistency.
+// Convert to table cell padding for reliable cross-client rendering.
+$("[data-editorblocktype]").each(function () {
+  const $div = $(this);
+  let style = $div.attr("style") || "";
+
+  const marginMatch = style.match(/\bmargin\s*:\s*([^;]+)/i);
+  if (!marginMatch) return;
+
+  const marginVal = marginMatch[1].trim();
+  if (/^0(px)?\s*(0(px)?\s*)*$/.test(marginVal)) return;
+
+  // Skip if content is already a single table
+  const children = $div.children();
+  if (children.length === 1 && children.first().is("table")) return;
+
+  // Wrap content in table with the margin as padding
+  const content = $div.html();
+  $div.html(
+    `<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse; border-spacing:0; mso-table-lspace:0pt; mso-table-rspace:0pt;"><tbody><tr><td style="padding:${marginVal};">${content}</td></tr></tbody></table>`
+  );
+
+  // Reset div margin
+  style = style.replace(/\bmargin\s*:\s*[^;]+;?\s*/i, "");
+  style = style.replace(/\bpadding\s*:\s*[^;]+;?\s*/i, "");
+  style = "margin:0;padding:0;" + style;
+  if (!style.includes("mso-para-margin")) {
+    style += ";mso-para-margin:0;mso-margin-top-alt:0;mso-margin-bottom-alt:0";
+  }
+  style = style.replace(/^;/, "").replace(/;\s*;/g, ";").replace(/;\s*$/, "");
+  $div.attr("style", style);
+  stats.editorblockMarginsConverted = (stats.editorblockMarginsConverted || 0) + 1;
+});
+
+// ===== 2n. Add mso-para-margin resets to all div inline styles ==============
 $("div").each(function () {
   let style = $(this).attr("style") || "";
   if (!style.includes("mso-para-margin")) {
@@ -440,7 +476,7 @@ $("div").each(function () {
   }
 });
 
-// ===== 2n. Clean up link styles ============================================
+// ===== 2o. Clean up link styles ============================================
 $("a").each(function () {
   let style = $(this).attr("style") || "";
   style = style.replace(
@@ -454,7 +490,7 @@ $("a").each(function () {
   }
 });
 
-// ===== 2o. Consolidate spacer rows into padding ============================
+// ===== 2p. Consolidate spacer rows into padding ============================
 // Spacer rows look like: <tr><td style="font-size:0;height:16px" height="16">&nbsp;</td></tr>
 // We try to merge them into padding on the adjacent content cell.
 $("tr").each(function () {
@@ -541,7 +577,7 @@ $("tr").each(function () {
   }
 });
 
-// ===== 2p. Unwrap unnecessary <span> wrappers ==============================
+// ===== 2q. Unwrap unnecessary <span> wrappers ==============================
 // Canva wraps text in many <span style="white-space:pre-wrap"> — after removing
 // pre-wrap, these become empty-style spans that just add bloat.
 $("span").each(function () {
@@ -642,6 +678,7 @@ if (!existingStyles.includes("mso-table-lspace") || !existingStyles.includes("-w
     /* Reset */
     body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
     table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; border-collapse: collapse; border-spacing: 0; }
+    td { word-wrap: break-word; word-break: break-word; overflow-wrap: break-word; }
     img { -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; display: block; }
     body { margin: 0; padding: 0; width: 100%; }
     div { margin: 0; padding: 0; mso-para-margin: 0; mso-margin-top-alt: 0; mso-margin-bottom-alt: 0; }
@@ -766,6 +803,7 @@ const outlookLabels = {
   msoTableSpacing: "MSO table spacing added",
   bgcolorMirrored: "bgcolor attribute mirrored from CSS background-color",
   msoParaMarginAdded: "mso-para-margin reset added to divs",
+  editorblockMarginsConverted: "editorblock div margins → table padding (Outlook fix)",
   spacerRowsConsolidated: "spacer rows consolidated into padding",
 };
 
