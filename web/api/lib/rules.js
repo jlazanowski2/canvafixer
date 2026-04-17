@@ -35,6 +35,34 @@ The input HTML has already had mechanical fixes applied (pixel rounding, MSO att
      so any spacing must come from table cell padding. Every data-editorblocktype
      div's content MUST be inside a <table><tr><td> — never bare <p>, <ul>, or
      other elements directly inside the div.
+   - **CRITICAL for multi-column image layouts**: When two or more images appear
+     side by side in columns, each image MUST have its own data-container /
+     data-editorblocktype="Image" wrapper. Do NOT wrap multiple column images in
+     a single data-editorblocktype block — D365 treats the entire block as one
+     editable unit, and clicking any image to edit breaks the column layout.
+     Use a <table> with separate <td class="stack-col"> cells, each containing
+     its own data-container / data-editorblocktype wrapper:
+     <table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border-spacing:0;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+       <tr>
+         <td width="50%" class="stack-col" valign="top" style="vertical-align:top;">
+           <div data-container="true" style="margin:0;padding:0;mso-para-margin:0;mso-margin-top-alt:0;mso-margin-bottom-alt:0;">
+             <div data-editorblocktype="Image" style="margin:0;padding:0;mso-para-margin:0;mso-margin-top-alt:0;mso-margin-bottom-alt:0;">
+               <table role="presentation" width="100%" ...><tr><td><img src="..." /></td></tr></table>
+             </div>
+           </div>
+         </td>
+         <td width="50%" class="stack-col" valign="top" style="vertical-align:top;">
+           <div data-container="true" style="margin:0;padding:0;...">
+             <div data-editorblocktype="Image" style="margin:0;padding:0;...">
+               <table role="presentation" width="100%" ...><tr><td><img src="..." /></td></tr></table>
+             </div>
+           </div>
+         </td>
+       </tr>
+     </table>
+     Each <td> can also contain additional data-container blocks (e.g., a Text
+     block for a column header above the image). The stack-col class on <td>
+     ensures columns stack vertically on mobile via the existing media query.
 
 3. **Rebuild buttons using the proven pattern**
    - Canva buttons have <a> wrapping a <table>. Replace with:
@@ -54,9 +82,10 @@ The input HTML has already had mechanical fixes applied (pixel rounding, MSO att
    - If the input has separate <tr> or <table> per bullet point, merge them into one <table> with one <tr> per bullet.
 
 5. **Ensure hybrid responsive columns**
-   - Multi-column layouts (like header with logo + text) should use:
+   - Multi-column layouts where all columns share ONE data-editorblocktype (like a header with logo + text) should use:
      <div class="stack-col" style="display:inline-block; vertical-align:middle; width:100%; max-width:XXXpx;">
-   - This allows them to stack on mobile without duplicate content blocks.
+   - Multi-column layouts where each column needs its OWN editable image block must use <td class="stack-col"> cells instead (see rule 2 above).
+   - Both approaches stack on mobile without duplicate content blocks.
 
 6. **Apply bgcolor on all <td> and <table> elements that need background colors**
    - Outlook ignores CSS background-color on divs. Always use the bgcolor HTML attribute on <td> and <table>.
